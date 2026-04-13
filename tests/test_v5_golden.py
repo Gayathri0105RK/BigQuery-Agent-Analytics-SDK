@@ -178,8 +178,7 @@ class TestBindingSpecSessionColumns:
     spec = _demo_spec()
     # Check the original V4 relationships, not lineage rels.
     v4_rels = [
-        r for r in spec.relationships
-        if r.binding.from_session_column is None
+        r for r in spec.relationships if r.binding.from_session_column is None
     ]
     assert len(v4_rels) >= 1
     for rel in v4_rels:
