@@ -765,3 +765,25 @@ def test_relationship_child_may_omit_cardinality():
   """
   # Should validate: child inherits parent cardinality silently.
   _load(yaml_input)
+
+
+def test_entity_and_relationship_cannot_share_name():
+  yaml_input = """
+    ontology: bad
+    entities:
+      - name: Link
+        keys: {primary: [id]}
+        properties: [{name: id, type: string}]
+      - name: A
+        keys: {primary: [id]}
+        properties: [{name: id, type: string}]
+      - name: B
+        keys: {primary: [id]}
+        properties: [{name: id, type: string}]
+    relationships:
+      - name: Link
+        from: A
+        to: B
+  """
+  with pytest.raises(ValueError, match="unique within the ontology"):
+    _load(yaml_input)

@@ -78,6 +78,15 @@ def _validate_ontology(ont: Ontology) -> None:
   """Run cross-element semantic validation over a parsed ontology."""
   entity_map = _check_unique_names(ont.entities, "entity")
   rel_map = _check_unique_names(ont.relationships, "relationship")
+  # Names live in a single ontology-wide namespace: an entity and a
+  # relationship cannot share a name.
+  collisions = set(entity_map) & set(rel_map)
+  if collisions:
+    name = sorted(collisions)[0]
+    raise ValueError(
+        f"Name {name!r} is used by both an entity and a relationship; "
+        "names must be unique within the ontology."
+    )
 
   for ent in ont.entities:
     _check_property_names_unique(ent.properties, f"entity {ent.name!r}")
@@ -364,6 +373,10 @@ def _check_covariant_narrowing(
     )
   # Cardinality is inherited unchanged: a child may omit it (and inherit
   # silently) or restate the parent's value, but cannot redefine it.
+  # This is intentionally strict on the "parent has None" case as well —
+  # a child may not introduce a cardinality that the parent did not
+  # declare. To loosen this later, allow ``parent.cardinality is None``
+  # to accept any child cardinality.
   if rel.cardinality is not None and rel.cardinality != parent.cardinality:
     raise ValueError(
         f"Relationship {rel.name!r}: cardinality {rel.cardinality.value!r} "
