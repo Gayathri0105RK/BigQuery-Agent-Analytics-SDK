@@ -49,6 +49,7 @@ import textwrap
 
 import pytest
 
+from bigquery_ontology import Binding
 from bigquery_ontology import load_binding
 from bigquery_ontology import load_binding_from_string
 from bigquery_ontology import load_ontology_from_string
@@ -292,6 +293,31 @@ def test_duplicate_relationship_binding_name_is_error():
   _assert_value_error(
       binding_yaml, "Duplicate relationship binding name: 'HOLDS'"
   )
+
+
+def test_cross_kind_duplicate_binding_name_is_error():
+  """Defensive: same name used for an entity binding and a relationship."""
+  from bigquery_ontology.binding_loader import _check_unique_binding_names
+  from bigquery_ontology.binding_models import Backend
+  from bigquery_ontology.binding_models import BigQueryTarget
+  from bigquery_ontology.binding_models import EntityBinding
+  from bigquery_ontology.binding_models import RelationshipBinding
+
+  binding = Binding(
+      binding="b",
+      ontology="x",
+      target=BigQueryTarget(
+          backend=Backend.BIGQUERY, project="p", dataset="d"
+      ),
+      entities=[EntityBinding(name="Foo", source="t", properties=[])],
+      relationships=[
+          RelationshipBinding(
+              name="Foo", source="e", from_columns=["a"], to_columns=["b"]
+          )
+      ],
+  )
+  with pytest.raises(ValueError, match="Duplicate binding name: 'Foo'"):
+    _check_unique_binding_names(binding)
 
 
 def test_entity_binding_references_unknown_entity():

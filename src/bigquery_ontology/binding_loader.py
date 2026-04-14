@@ -130,12 +130,7 @@ def _discover_ontology(binding_text: str, binding_path: Path) -> Ontology:
   any structural errors here are swallowed so that the richer pydantic
   error from ``Binding(**data)`` surfaces instead.
   """
-  try:
-    data = yaml.safe_load(binding_text)
-  except yaml.YAMLError:
-    # Let load_binding_from_string surface the YAML error with full
-    # context.
-    raise
+  data = yaml.safe_load(binding_text)
   ontology_name: str | None = None
   if isinstance(data, dict) and isinstance(data.get("ontology"), str):
     ontology_name = data["ontology"]
@@ -193,17 +188,22 @@ def _validate_binding(binding: Binding, ontology: Ontology) -> None:
 
 
 def _check_unique_binding_names(binding: Binding) -> None:
-  """Entity and relationship binding names must each be unique.
+  """Entity and relationship binding names must be unique across kinds.
 
-  An entity and a relationship sharing a binding-level name cannot
-  collide — the ontology already rejects that case across its own
-  namespace, and we validate against the ontology below — so we only
-  check within each kind.
+  The ontology loader already prevents entity/relationship name
+  collisions, so a cross-kind duplicate in a valid binding is
+  impossible in practice. We check defensively — the cost is
+  negligible and the error message is clearer than a downstream
+  name-resolution failure.
   """
   _assert_unique((eb.name for eb in binding.entities), "entity binding")
   _assert_unique(
       (rb.name for rb in binding.relationships), "relationship binding"
   )
+  all_names = [eb.name for eb in binding.entities] + [
+      rb.name for rb in binding.relationships
+  ]
+  _assert_unique(iter(all_names), "binding")
 
 
 def _assert_unique(names: Iterable[str], kind: str) -> None:

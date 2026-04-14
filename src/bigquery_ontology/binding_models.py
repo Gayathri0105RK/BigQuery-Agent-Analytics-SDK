@@ -107,11 +107,7 @@ class EntityBinding(BaseModel):
 
   name: str
   source: str
-  # Whether a ``properties: []`` list is *correct* depends on how many
-  # non-derived properties the entity declares — a question this shape
-  # model cannot answer. Accept any list length here and let the loader
-  # enforce all-or-nothing coverage once it has the ontology in hand.
-  properties: list[PropertyBinding] = Field(default_factory=list)
+  properties: list[PropertyBinding]
 
 
 class RelationshipBinding(BaseModel):
