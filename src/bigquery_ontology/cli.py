@@ -15,17 +15,18 @@
 """``gm`` command-line interface.
 
 ``gm validate`` accepts either an ontology YAML or a binding YAML and
-dispatches to the matching loader. For binding files, the companion
-ontology is auto-discovered as ``<name>.ontology.yaml`` next to the
-binding by default; pass ``--ontology PATH`` to point at a specific
-ontology file instead. The ``gm compile`` and ``gm import-owl`` commands
-referenced elsewhere will be wired up when their modules land.
+dispatches to the matching loader. ``gm compile`` takes a binding YAML
+and emits the corresponding ``CREATE PROPERTY GRAPH`` DDL on stdout
+(or to ``-o PATH``). Both commands resolve a binding's companion
+ontology by auto-discovering ``<name>.ontology.yaml`` next to the
+binding; ``--ontology PATH`` overrides that lookup.
 
 Exit codes:
 
   0 — success
   1 — validation / compilation error
-  2 — usage error (bad flag, missing file, missing companion ontology)
+  2 — usage error (bad flag, missing file, missing companion ontology,
+      compile invoked on a non-binding file)
   3 — internal error
 """
 
@@ -42,12 +43,15 @@ import yaml
 
 from .binding_loader import load_binding
 from .binding_loader import load_binding_from_string
+from .binding_models import Binding
+from .compiler import compile_graph
 from .loader import load_ontology
 from .loader import load_ontology_from_string
+from .ontology_models import Ontology
 
 app = typer.Typer(
     name="gm",
-    help="Graph-model CLI. Currently supports: validate.",
+    help="Graph-model CLI. Commands: validate, compile.",
     add_completion=False,
     no_args_is_help=True,
 )
@@ -172,10 +176,11 @@ def _detect_kind(text: str) -> str:
 
 @app.command("validate")
 def validate(
-    # Existence/readability are validated inside the command (not via
-    # ``exists=True``) so that ``--json`` can produce a structured error
-    # instead of falling through to Typer's human usage text.
-    file: Path = typer.Argument(
+    # Type is ``str`` rather than ``Path`` because Typer maps
+    # ``pathlib.Path`` to ``click.Path(readable=True)``, which
+    # pre-validates readability and emits human usage text on failure —
+    # bypassing ``--json`` structured output.
+    file: str = typer.Argument(
         ...,
         help="Path to an ontology or binding YAML file.",
     ),
@@ -184,10 +189,7 @@ def validate(
         "--json",
         help="Emit structured JSON errors on stderr.",
     ),
-    # Type is ``str | None`` rather than ``Path | None`` because Typer
-    # maps ``pathlib.Path`` to ``TyperPath(readable=True)``, which
-    # pre-validates readability and emits human usage text on failure —
-    # bypassing ``--json`` structured output.
+    # Same ``str`` rationale as ``file`` above.
     ontology_path: str | None = typer.Option(
         None,
         "--ontology",
@@ -198,11 +200,12 @@ def validate(
     ),
 ) -> None:
   """Validate a single ontology or binding YAML file."""
-  if not file.exists() or not file.is_file():
+  file_path = Path(file)
+  if not file_path.exists() or not file_path.is_file():
     _emit_errors(
         [
             {
-                "file": str(file),
+                "file": file,
                 "line": 0,
                 "col": 0,
                 "rule": "cli-missing-file",
@@ -213,8 +216,23 @@ def validate(
         as_json=json_output,
     )
     raise typer.Exit(code=2)
+  if not os.access(file_path, os.R_OK):
+    _emit_errors(
+        [
+            {
+                "file": file,
+                "line": 0,
+                "col": 0,
+                "rule": "cli-missing-file",
+                "severity": "error",
+                "message": f"File not readable: {file}",
+            }
+        ],
+        as_json=json_output,
+    )
+    raise typer.Exit(code=2)
 
-  text = file.read_text(encoding="utf-8")
+  text = file_path.read_text(encoding="utf-8")
   try:
     kind = _detect_kind(text)
   except yaml.YAMLError as exc:
@@ -232,7 +250,7 @@ def validate(
         Path(ontology_path) if ontology_path is not None else None
     )
     _validate_binding_file(
-        file, ontology_path=resolved_ontology, json_output=json_output
+        file_path, ontology_path=resolved_ontology, json_output=json_output
     )
     return
 
@@ -269,20 +287,185 @@ def validate(
   # Success: nothing on stdout.
 
 
+# --------------------------------------------------------------------- #
+# gm compile                                                             #
+# --------------------------------------------------------------------- #
+
+
+@app.command("compile")
+def compile_command(
+    # All path params use ``str`` (not ``Path``) so Typer does not
+    # pre-validate readability and bypass ``--json`` structured output.
+    file: str = typer.Argument(
+        ...,
+        help="Path to a binding YAML file.",
+    ),
+    ontology_path: str | None = typer.Option(
+        None,
+        "--ontology",
+        help=(
+            "Path to the companion ontology YAML. Defaults to "
+            "<ontology>.ontology.yaml next to the binding."
+        ),
+    ),
+    output_path: str | None = typer.Option(
+        None,
+        "-o",
+        "--output",
+        help=(
+            "Write DDL to this file instead of stdout. The file is "
+            "overwritten if it already exists."
+        ),
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit structured JSON errors on stderr.",
+    ),
+) -> None:
+  """Compile a binding to BigQuery ``CREATE PROPERTY GRAPH`` DDL.
+
+  On success, writes the DDL to stdout (or to ``--output PATH`` if
+  provided) and exits 0 with nothing on stderr. On any failure,
+  structured errors land on stderr and the DDL is not written.
+
+  The input must be a binding YAML file. Ontology files cannot be
+  compiled on their own (they're backend-neutral; they need a
+  binding to pick up physical tables and columns).
+  """
+  file_path = Path(file)
+  if not file_path.exists() or not file_path.is_file():
+    _emit_errors(
+        [
+            {
+                "file": file,
+                "line": 0,
+                "col": 0,
+                "rule": "cli-missing-file",
+                "severity": "error",
+                "message": f"File not found: {file}",
+            }
+        ],
+        as_json=json_output,
+    )
+    raise typer.Exit(code=2)
+  if not os.access(file_path, os.R_OK):
+    _emit_errors(
+        [
+            {
+                "file": file,
+                "line": 0,
+                "col": 0,
+                "rule": "cli-missing-file",
+                "severity": "error",
+                "message": f"File not readable: {file}",
+            }
+        ],
+        as_json=json_output,
+    )
+    raise typer.Exit(code=2)
+
+  text = file_path.read_text(encoding="utf-8")
+  try:
+    kind = _detect_kind(text)
+  except yaml.YAMLError as exc:
+    _emit_errors(
+        _collect_errors(file, exc, kind="binding"),
+        as_json=json_output,
+    )
+    raise typer.Exit(code=1)
+
+  if kind != "binding":
+    if kind == "ontology":
+      message = "gm compile requires a binding file; got an ontology."
+    else:
+      message = (
+          "gm compile requires a binding file (top-level "
+          "'binding:'); got neither an ontology nor a binding."
+      )
+    _emit_errors(
+        [
+            {
+                "file": file,
+                "line": 0,
+                "col": 0,
+                "rule": "cli-wrong-kind",
+                "severity": "error",
+                "message": message,
+            }
+        ],
+        as_json=json_output,
+    )
+    raise typer.Exit(code=2)
+
+  resolved_ontology = (
+      Path(ontology_path) if ontology_path is not None else None
+  )
+  ontology, binding = _load_ontology_and_binding(
+      file_path, ontology_path=resolved_ontology, json_output=json_output
+  )
+
+  try:
+    ddl = compile_graph(ontology, binding)
+  except ValueError as exc:
+    _emit_errors(
+        _collect_errors(file, exc, kind="compile"),
+        as_json=json_output,
+    )
+    raise typer.Exit(code=1)
+  except Exception as exc:  # pragma: no cover - defensive
+    typer.echo(f"internal error: {exc}", err=True)
+    raise typer.Exit(code=3)
+
+  if output_path is not None:
+    resolved_output = Path(output_path)
+    try:
+      resolved_output.write_text(ddl, encoding="utf-8")
+    except (FileNotFoundError, PermissionError) as exc:
+      _emit_errors(
+          [
+              {
+                  "file": str(resolved_output),
+                  "line": 0,
+                  "col": 0,
+                  "rule": "cli-output-error",
+                  "severity": "error",
+                  "message": f"Cannot write output file: {exc}",
+              }
+          ],
+          as_json=json_output,
+      )
+      raise typer.Exit(code=1)
+  else:
+    typer.echo(ddl, nl=False)
+
+
 def _validate_binding_file(
     file: Path,
     *,
     ontology_path: Path | None,
     json_output: bool,
 ) -> None:
-  """Dispatch to the binding loader.
+  """Validate a binding file. Thin wrapper: load pair and discard."""
+  _load_ontology_and_binding(
+      file, ontology_path=ontology_path, json_output=json_output
+  )
+  # Success: nothing on stdout.
 
-  The CLI resolves and loads the companion ontology itself rather than
-  letting ``load_binding`` auto-discover, because otherwise an error
-  surfaced inside the ontology file (e.g. a bad key reference) would
-  bubble out of ``load_binding`` as a generic ``ValueError`` and get
-  reported with ``file=<binding>`` and ``rule=binding-validation`` —
-  misleading, since the real fault is in the ontology.
+
+def _load_ontology_and_binding(
+    file: Path,
+    *,
+    ontology_path: Path | None,
+    json_output: bool,
+) -> tuple[Ontology, Binding]:
+  """Resolve, load, and return both sides of a binding + ontology pair.
+
+  Shared by ``gm validate`` and ``gm compile``. The CLI resolves the
+  companion ontology itself (rather than letting ``load_binding``
+  auto-discover) so that errors surfaced inside the ontology file are
+  reported against the ontology path with ``rule=ontology-validation``
+  — not masked as a binding error.
 
   Resolution order:
 
@@ -297,13 +480,17 @@ def _validate_binding_file(
       with ``file`` set to the ontology path (exit 1).
     - Binding parse/shape/validation error → tagged ``kind=binding``
       with ``file`` set to the binding path (exit 1).
+
+  Returns the pair on success. Any failure calls ``_emit_errors`` and
+  raises ``typer.Exit`` — callers never see a partial result.
   """
   text = file.read_text(encoding="utf-8")
 
-  # If the caller didn't supply --ontology, try to compute the companion
-  # path from the binding itself. A failed peek (malformed YAML, or no
-  # parseable ontology name) leaves ``ontology_path`` as None; the binding
-  # loader below will then surface the real shape/parse error.
+  # Peek at the binding to compute the companion path, unless the
+  # caller supplied --ontology. A failed peek (malformed YAML, or no
+  # parseable ontology name) leaves ``ontology_path`` as None; we
+  # then defer to ``load_binding`` below to surface the real binding
+  # error with proper kind-tagging.
   discovered_via_peek = False
   peeked_name: str | None = None
   if ontology_path is None:
@@ -312,73 +499,77 @@ def _validate_binding_file(
       ontology_path = file.parent / f"{peeked_name}.ontology.yaml"
       discovered_via_peek = True
 
-  ontology = None
-  if ontology_path is not None:
-    if (
-        not ontology_path.exists()
-        or not ontology_path.is_file()
-        or not os.access(ontology_path, os.R_OK)
-    ):
-      # Auto-discovery and explicit-flag paths get distinct messages —
-      # the former explains *why* we looked where we did, the latter
-      # simply reports what the user asked us to open.
-      if discovered_via_peek:
-        message = (
-            f"Binding references ontology {peeked_name!r}, "
-            f"but no companion ontology file found at {ontology_path}."
-        )
-      else:
-        message = f"Ontology file not found: {ontology_path}"
+  if ontology_path is None:
+    try:
+      load_binding(file)
+    except FileNotFoundError as exc:
       _emit_errors(
           [
               {
-                  "file": str(ontology_path)
-                  if not discovered_via_peek
-                  else str(file),
+                  "file": str(file),
                   "line": 0,
                   "col": 0,
                   "rule": "cli-missing-ontology",
                   "severity": "error",
-                  "message": message,
+                  "message": str(exc),
               }
           ],
           as_json=json_output,
       )
       raise typer.Exit(code=2)
-    try:
-      ontology = load_ontology(ontology_path)
     except (ValueError, ValidationError, yaml.YAMLError) as exc:
       _emit_errors(
-          _collect_errors(str(ontology_path), exc, kind="ontology"),
+          _collect_errors(str(file), exc, kind="binding"),
           as_json=json_output,
       )
       raise typer.Exit(code=1)
+    # If load_binding somehow succeeded without a peek path, the
+    # caller lost the ontology object. Defensive: should not happen.
+    raise typer.Exit(code=3)  # pragma: no cover
 
-  try:
-    if ontology is not None:
-      load_binding_from_string(text, ontology=ontology)
+  if (
+      not ontology_path.exists()
+      or not ontology_path.is_file()
+      or not os.access(ontology_path, os.R_OK)
+  ):
+    # Auto-discovery and explicit-flag paths get distinct messages —
+    # the former explains *why* we looked where we did, the latter
+    # simply reports what the user asked us to open.
+    if discovered_via_peek:
+      message = (
+          f"Binding references ontology {_peek_ontology_name(text)!r}, "
+          f"but no companion ontology file found at {ontology_path}."
+      )
+      reported_file = str(file)
     else:
-      # Peek failed — defer to load_binding so the underlying yaml /
-      # pydantic error surfaces directly against the binding file.
-      load_binding(file)
-  except FileNotFoundError as exc:
-    # Only reachable when ``ontology is None`` (peek failed), and
-    # ``load_binding``'s own discovery then raised. Treat the same as
-    # the peek-found-but-missing case.
+      message = f"Ontology file not found: {ontology_path}"
+      reported_file = str(ontology_path)
     _emit_errors(
         [
             {
-                "file": str(file),
+                "file": reported_file,
                 "line": 0,
                 "col": 0,
                 "rule": "cli-missing-ontology",
                 "severity": "error",
-                "message": str(exc),
+                "message": message,
             }
         ],
         as_json=json_output,
     )
     raise typer.Exit(code=2)
+
+  try:
+    ontology = load_ontology(ontology_path)
+  except (ValueError, ValidationError, yaml.YAMLError) as exc:
+    _emit_errors(
+        _collect_errors(str(ontology_path), exc, kind="ontology"),
+        as_json=json_output,
+    )
+    raise typer.Exit(code=1)
+
+  try:
+    binding = load_binding_from_string(text, ontology=ontology)
   except (ValueError, ValidationError, yaml.YAMLError) as exc:
     _emit_errors(
         _collect_errors(str(file), exc, kind="binding"),
@@ -388,7 +579,8 @@ def _validate_binding_file(
   except Exception as exc:  # pragma: no cover - defensive
     typer.echo(f"internal error: {exc}", err=True)
     raise typer.Exit(code=3)
-  # Success: nothing on stdout.
+
+  return ontology, binding
 
 
 def _peek_ontology_name(binding_text: str) -> str | None:
