@@ -136,6 +136,7 @@ class _ScaffoldRelTable:
   columns: tuple[_ScaffoldColumn, ...]
   pk_columns: tuple[str, ...] | None
   foreign_keys: tuple[_ScaffoldFK, ...]
+  suggested_pk_columns: tuple[str, ...] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +305,12 @@ def _resolve_rel_table(
     # No keys block.
     columns = tuple(from_cols + to_cols + prop_columns)
 
+  suggested_pk: tuple[str, ...] | None = None
+  if pk_col_names is None:
+    suggested_pk = tuple(c.name for c in from_cols) + tuple(
+        c.name for c in to_cols
+    )
+
   table_name = _qualify(dataset, _apply_naming(rel.name, naming), project)
 
   from_entity_table = _qualify(
@@ -339,6 +346,7 @@ def _resolve_rel_table(
       columns=columns,
       pk_columns=pk_col_names,
       foreign_keys=foreign_keys,
+      suggested_pk_columns=suggested_pk,
   )
 
 
@@ -347,12 +355,18 @@ def _resolve_rel_table(
 # ---------------------------------------------------------------------------
 
 
+def _pad_columns(columns: tuple[_ScaffoldColumn, ...]) -> list[str]:
+  name_width = max(len(c.name) for c in columns)
+  padded: list[str] = []
+  for col in columns:
+    nn = " NOT NULL" if col.not_null else ""
+    padded.append(f"  {col.name:<{name_width}}  {col.bq_type}{nn}")
+  return padded
+
+
 def _emit_entity_ddl(table: _ScaffoldEntityTable) -> str:
   lines = [f"CREATE TABLE `{table.table_name}` ("]
-  parts: list[str] = []
-  for col in table.columns:
-    nn = " NOT NULL" if col.not_null else ""
-    parts.append(f"  {col.name} {col.bq_type}{nn}")
+  parts = _pad_columns(table.columns)
   parts.append(f"  PRIMARY KEY ({', '.join(table.pk_columns)}) NOT ENFORCED")
   lines.append(",\n".join(parts))
   lines.append(");")
@@ -361,12 +375,15 @@ def _emit_entity_ddl(table: _ScaffoldEntityTable) -> str:
 
 def _emit_rel_ddl(table: _ScaffoldRelTable) -> str:
   lines = [f"CREATE TABLE `{table.table_name}` ("]
-  parts: list[str] = []
-  for col in table.columns:
-    nn = " NOT NULL" if col.not_null else ""
-    parts.append(f"  {col.name} {col.bq_type}{nn}")
+  parts = _pad_columns(table.columns)
   if table.pk_columns is not None:
     parts.append(f"  PRIMARY KEY ({', '.join(table.pk_columns)}) NOT ENFORCED")
+  if table.suggested_pk_columns is not None:
+    suggested = ", ".join(table.suggested_pk_columns)
+    parts.append(
+        f"  -- TODO: uncomment if ({suggested}) is unique per row\n"
+        f"  -- PRIMARY KEY ({suggested}) NOT ENFORCED"
+    )
   for fk in table.foreign_keys:
     fk_cols = ", ".join(fk.columns)
     ref_cols = ", ".join(fk.ref_columns)

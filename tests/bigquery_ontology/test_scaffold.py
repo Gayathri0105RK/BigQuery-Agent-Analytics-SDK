@@ -121,9 +121,9 @@ class TestEntityDDL:
     expected = textwrap.dedent(
         """\
         CREATE TABLE `my_dataset.person` (
-          party_id STRING NOT NULL,
-          name STRING,
-          dob DATE,
+          party_id  STRING NOT NULL,
+          name      STRING,
+          dob       DATE,
           PRIMARY KEY (party_id) NOT ENFORCED
         );
     """
@@ -138,9 +138,9 @@ class TestEntityDDL:
     expected = textwrap.dedent(
         """\
         CREATE TABLE `my_dataset.account_day` (
-          account_id STRING NOT NULL,
-          as_of DATE NOT NULL,
-          balance NUMERIC,
+          account_id  STRING NOT NULL,
+          as_of       DATE NOT NULL,
+          balance     NUMERIC,
           PRIMARY KEY (account_id, as_of) NOT ENFORCED
         );
     """
@@ -158,7 +158,7 @@ class TestEntityDDL:
     ontology = load_ontology_from_string(textwrap.dedent(_PERSON_ONTOLOGY))
     ddl, _ = scaffold(ontology, dataset="my_dataset", naming="preserve")
     assert "`my_dataset.Person`" in ddl
-    assert "party_id STRING" in ddl
+    assert "party_id" in ddl and "STRING NOT NULL" in ddl
 
   def test_project_qualified(self):
     ontology = load_ontology_from_string(textwrap.dedent(_PERSON_ONTOLOGY))
@@ -268,9 +268,11 @@ class TestRelationshipDDL:
     expected_rel = textwrap.dedent(
         """\
         CREATE TABLE `my_dataset.follows` (
-          from_party_id STRING NOT NULL,
-          to_party_id STRING NOT NULL,
-          since DATE,
+          from_party_id  STRING NOT NULL,
+          to_party_id    STRING NOT NULL,
+          since          DATE,
+          -- TODO: uncomment if (from_party_id, to_party_id) is unique per row
+          -- PRIMARY KEY (from_party_id, to_party_id) NOT ENFORCED,
           FOREIGN KEY (from_party_id) REFERENCES `my_dataset.person`(party_id) NOT ENFORCED,
           FOREIGN KEY (to_party_id) REFERENCES `my_dataset.person`(party_id) NOT ENFORCED
         );
@@ -284,11 +286,11 @@ class TestRelationshipDDL:
     expected_rel = textwrap.dedent(
         """\
         CREATE TABLE `my_dataset.holding` (
-          from_account_id STRING NOT NULL,
-          from_as_of DATE NOT NULL,
-          to_isin STRING NOT NULL,
-          as_of DATE NOT NULL,
-          quantity NUMERIC,
+          from_account_id  STRING NOT NULL,
+          from_as_of       DATE NOT NULL,
+          to_isin          STRING NOT NULL,
+          as_of            DATE NOT NULL,
+          quantity         NUMERIC,
           PRIMARY KEY (from_account_id, from_as_of, to_isin, as_of) NOT ENFORCED,
           FOREIGN KEY (from_account_id, from_as_of) REFERENCES `my_dataset.account`(account_id, as_of) NOT ENFORCED,
           FOREIGN KEY (to_isin) REFERENCES `my_dataset.security`(isin) NOT ENFORCED
@@ -300,10 +302,10 @@ class TestRelationshipDDL:
   def test_keys_primary_relationship(self):
     ontology = load_ontology_from_string(textwrap.dedent(_REL_OWN_PK_ONTOLOGY))
     ddl, _ = scaffold(ontology, dataset="ds")
-    assert "transfer_id STRING NOT NULL" in ddl
+    assert "transfer_id     STRING NOT NULL" in ddl
     assert "PRIMARY KEY (transfer_id) NOT ENFORCED" in ddl
-    assert "from_person_id STRING NOT NULL" in ddl
-    assert "to_person_id STRING NOT NULL" in ddl
+    assert "from_person_id  STRING NOT NULL" in ddl
+    assert "to_person_id    STRING NOT NULL" in ddl
 
   def test_endpoint_column_collision(self):
     ontology = load_ontology_from_string(textwrap.dedent(_COLLISION_ONTOLOGY))
@@ -314,7 +316,25 @@ class TestRelationshipDDL:
     ontology = load_ontology_from_string(textwrap.dedent(_REL_DERIVED_ONTOLOGY))
     ddl, _ = scaffold(ontology, dataset="ds")
     assert "label" not in ddl
-    assert "since DATE" in ddl
+    assert "since" in ddl and "DATE" in ddl
+
+  def test_no_keys_emits_suggested_pk_comment(self):
+    ontology = load_ontology_from_string(textwrap.dedent(_FOLLOWS_ONTOLOGY))
+    ddl, _ = scaffold(ontology, dataset="ds")
+    assert "-- TODO: uncomment if (from_party_id, to_party_id) is unique" in ddl
+    assert "-- PRIMARY KEY (from_party_id, to_party_id) NOT ENFORCED" in ddl
+
+  def test_keys_primary_has_no_suggested_pk_comment(self):
+    ontology = load_ontology_from_string(textwrap.dedent(_REL_OWN_PK_ONTOLOGY))
+    ddl, _ = scaffold(ontology, dataset="ds")
+    assert "-- TODO" not in ddl
+    assert "-- PRIMARY KEY" not in ddl
+
+  def test_keys_additional_has_no_suggested_pk_comment(self):
+    ontology = load_ontology_from_string(textwrap.dedent(_HOLDING_ONTOLOGY))
+    ddl, _ = scaffold(ontology, dataset="ds")
+    assert "-- TODO" not in ddl
+    assert "-- PRIMARY KEY" not in ddl
 
 
 # ===================================================================== #
