@@ -507,7 +507,7 @@ def _emit_bigquery(graph: ResolvedGraph) -> str:
 
 
 def _emit_node_table_entries(
-    node_tables: tuple[ResolvedNodeTable, ...]
+    node_tables: tuple[ResolvedNodeTable, ...],
 ) -> list[str]:
   """Render the NODE TABLES list body (entries, no surrounding parens)."""
   entries: list[list[str]] = [_emit_node_table(nt) for nt in node_tables]
@@ -531,7 +531,7 @@ def _emit_node_table(nt: ResolvedNodeTable) -> list[str]:
 
 
 def _emit_edge_table_entries(
-    edge_tables: tuple[ResolvedEdgeTable, ...]
+    edge_tables: tuple[ResolvedEdgeTable, ...],
 ) -> list[str]:
   """Render the EDGE TABLES list body (entries, no surrounding parens)."""
   entries: list[list[str]] = [_emit_edge_table(et) for et in edge_tables]
