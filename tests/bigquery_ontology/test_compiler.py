@@ -32,7 +32,6 @@ from bigquery_ontology import compile_graph
 from bigquery_ontology import load_binding_from_string
 from bigquery_ontology import load_ontology_from_string
 
-
 # --------------------------------------------------------------------- #
 # Shared finance fixture                                                 #
 # --------------------------------------------------------------------- #

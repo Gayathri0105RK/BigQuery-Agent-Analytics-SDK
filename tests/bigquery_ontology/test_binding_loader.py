@@ -54,7 +54,6 @@ from bigquery_ontology import load_binding
 from bigquery_ontology import load_binding_from_string
 from bigquery_ontology import load_ontology_from_string
 
-
 ONTOLOGY = """
   ontology: finance
   entities:
@@ -108,6 +107,7 @@ def _load(binding_yaml: str):
   return load_binding_from_string(
       textwrap.dedent(binding_yaml).lstrip(), ontology=_ontology()
   )
+
 
 def _assert_value_error(binding_yaml: str, expected_message: str) -> None:
   with pytest.raises(ValueError) as exc_info:
@@ -261,9 +261,7 @@ def test_duplicate_entity_binding_name_is_error():
         source: t2
         properties: [{name: account_id, column: c}]
   """
-  _assert_value_error(
-      binding_yaml, "Duplicate entity binding name: 'Account'"
-  )
+  _assert_value_error(binding_yaml, "Duplicate entity binding name: 'Account'")
 
 
 def test_duplicate_relationship_binding_name_is_error():
@@ -306,9 +304,7 @@ def test_cross_kind_duplicate_binding_name_is_error():
   binding = Binding(
       binding="b",
       ontology="x",
-      target=BigQueryTarget(
-          backend=Backend.BIGQUERY, project="p", dataset="d"
-      ),
+      target=BigQueryTarget(backend=Backend.BIGQUERY, project="p", dataset="d"),
       entities=[EntityBinding(name="Foo", source="t", properties=[])],
       relationships=[
           RelationshipBinding(

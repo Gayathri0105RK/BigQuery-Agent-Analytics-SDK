@@ -281,9 +281,7 @@ def _check_property_coverage(
     4. A non-derived property has no PropertyBinding — partial coverage
        within an included element is not allowed.
   """
-  required = {
-      name for name, prop in effective.items() if prop.expr is None
-  }
+  required = {name for name, prop in effective.items() if prop.expr is None}
   seen: set[str] = set()
   for pb in bindings:
     if pb.name not in effective:
@@ -304,8 +302,7 @@ def _check_property_coverage(
   missing = sorted(required - seen)
   if missing:
     raise ValueError(
-        f"{owner}: missing bindings for non-derived properties "
-        f"{missing!r}."
+        f"{owner}: missing bindings for non-derived properties " f"{missing!r}."
     )
 
 
@@ -375,5 +372,3 @@ def _has_bound_descendant(
     if _is_entity_subtype(bound, endpoint, entity_map):
       return True
   return False
-
-

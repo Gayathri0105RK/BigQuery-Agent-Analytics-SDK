@@ -67,7 +67,6 @@ from .resolved_models import ResolvedLabelAndProperties
 from .resolved_models import ResolvedNodeTable
 from .resolved_models import ResolvedProperty
 
-
 # --------------------------------------------------------------------- #
 # Public entry point                                                    #
 # --------------------------------------------------------------------- #
@@ -123,7 +122,9 @@ def _resolve(ontology: Ontology, binding: Binding) -> ResolvedGraph:
   # Map alias -> ResolvedNodeTable for edge-resolution lookups. Aliases equal
   # entity names (see ``_resolve_node_table``), so a relationship's
   # ``from_`` / ``to`` values look up directly.
-  node_by_alias: dict[str, ResolvedNodeTable] = {nt.alias: nt for nt in node_tables}
+  node_by_alias: dict[str, ResolvedNodeTable] = {
+      nt.alias: nt for nt in node_tables
+  }
 
   edge_tables = tuple(
       sorted(
@@ -209,9 +210,7 @@ def _resolve_node_table(entity: Entity, eb: EntityBinding) -> ResolvedNodeTable:
       # The tuple shape reserves the door for future multi-label
       # work; see ``ResolvedLabelAndProperties`` docstring.
       label_and_properties=(
-          ResolvedLabelAndProperties(
-              label=entity.name, properties=properties
-          ),
+          ResolvedLabelAndProperties(label=entity.name, properties=properties),
       ),
   )
 
@@ -254,9 +253,7 @@ def _resolve_edge_table(
       # v0 emits one label per edge — the relationship name — bundled
       # with the relationship's full property set.
       label_and_properties=(
-          ResolvedLabelAndProperties(
-              label=rel.name, properties=properties
-          ),
+          ResolvedLabelAndProperties(label=rel.name, properties=properties),
       ),
   )
 
@@ -395,9 +392,7 @@ def _resolve_sql(
   if prop.name in resolved_sql:
     return resolved_sql[prop.name]
   if prop.name in resolving:
-    raise ValueError(
-        f"Derived property cycle on {owner} at {prop.name!r}."
-    )
+    raise ValueError(f"Derived property cycle on {owner} at {prop.name!r}.")
 
   if prop.expr is None:
     # Stored property — the bound column is the SQL. (The loader has
@@ -418,8 +413,7 @@ def _resolve_sql(
     names_in_expr = [
         name
         for name in sorted(property_map.keys(), key=len, reverse=True)
-        if name != prop.name
-        and re.search(rf"\b{re.escape(name)}\b", prop.expr)
+        if name != prop.name and re.search(rf"\b{re.escape(name)}\b", prop.expr)
     ]
 
     if names_in_expr:
@@ -512,7 +506,9 @@ def _emit_bigquery(graph: ResolvedGraph) -> str:
   return "\n".join(lines) + "\n"
 
 
-def _emit_node_table_entries(node_tables: tuple[ResolvedNodeTable, ...]) -> list[str]:
+def _emit_node_table_entries(
+    node_tables: tuple[ResolvedNodeTable, ...]
+) -> list[str]:
   """Render the NODE TABLES list body (entries, no surrounding parens)."""
   entries: list[list[str]] = [_emit_node_table(nt) for nt in node_tables]
   return _join_entries(entries)
@@ -534,7 +530,9 @@ def _emit_node_table(nt: ResolvedNodeTable) -> list[str]:
   return lines
 
 
-def _emit_edge_table_entries(edge_tables: tuple[ResolvedEdgeTable, ...]) -> list[str]:
+def _emit_edge_table_entries(
+    edge_tables: tuple[ResolvedEdgeTable, ...]
+) -> list[str]:
   """Render the EDGE TABLES list body (entries, no surrounding parens)."""
   entries: list[list[str]] = [_emit_edge_table(et) for et in edge_tables]
   return _join_entries(entries)

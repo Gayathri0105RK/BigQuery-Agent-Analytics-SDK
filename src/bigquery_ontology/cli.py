@@ -228,7 +228,9 @@ def validate(
     raise typer.Exit(code=1)
 
   if kind == "binding":
-    resolved_ontology = Path(ontology_path) if ontology_path is not None else None
+    resolved_ontology = (
+        Path(ontology_path) if ontology_path is not None else None
+    )
     _validate_binding_file(
         file, ontology_path=resolved_ontology, json_output=json_output
     )
