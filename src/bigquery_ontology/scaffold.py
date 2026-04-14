@@ -40,8 +40,8 @@ after generation.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
+import re
 
 from .ontology_models import Entity
 from .ontology_models import Keys
@@ -53,9 +53,7 @@ from .ontology_models import Relationship
 # Naming
 # ---------------------------------------------------------------------------
 
-_SNAKE_RE = re.compile(
-    r"(?<=[a-z0-9])([A-Z])|(?<=[A-Z])([A-Z][a-z])"
-)
+_SNAKE_RE = re.compile(r"(?<=[a-z0-9])([A-Z])|(?<=[A-Z])([A-Z][a-z])")
 
 
 def _to_snake_case(name: str) -> str:
@@ -167,20 +165,24 @@ def _resolve_entity_table(
 
   for pk_name in entity.keys.primary:
     prop = prop_map[pk_name]
-    pk_columns.append(_ScaffoldColumn(
-        name=_apply_naming(prop.name, naming),
-        bq_type=_ONTOLOGY_TO_BQ_TYPE[prop.type],
-        not_null=True,
-    ))
+    pk_columns.append(
+        _ScaffoldColumn(
+            name=_apply_naming(prop.name, naming),
+            bq_type=_ONTOLOGY_TO_BQ_TYPE[prop.type],
+            not_null=True,
+        )
+    )
 
   for prop in entity.properties:
     if prop.name in pk_set or prop.expr is not None:
       continue
-    other_columns.append(_ScaffoldColumn(
-        name=_apply_naming(prop.name, naming),
-        bq_type=_ONTOLOGY_TO_BQ_TYPE[prop.type],
-        not_null=False,
-    ))
+    other_columns.append(
+        _ScaffoldColumn(
+            name=_apply_naming(prop.name, naming),
+            bq_type=_ONTOLOGY_TO_BQ_TYPE[prop.type],
+            not_null=False,
+        )
+    )
 
   table_name = _qualify(dataset, _apply_naming(entity.name, naming), project)
   columns = tuple(pk_columns + other_columns)
@@ -209,11 +211,13 @@ def _endpoint_columns(
   for pk_name in entity.keys.primary:
     prop = prop_map[pk_name]
     col_name = f"{prefix}_{_apply_naming(prop.name, naming)}"
-    cols.append(_ScaffoldColumn(
-        name=col_name,
-        bq_type=_ONTOLOGY_TO_BQ_TYPE[prop.type],
-        not_null=True,
-    ))
+    cols.append(
+        _ScaffoldColumn(
+            name=col_name,
+            bq_type=_ONTOLOGY_TO_BQ_TYPE[prop.type],
+            not_null=True,
+        )
+    )
   return cols
 
 
@@ -243,11 +247,13 @@ def _resolve_rel_table(
           f"(column {col_name!r}) collides with a generated endpoint "
           "column. Rename the property or the entity key to resolve."
       )
-    prop_columns.append(_ScaffoldColumn(
-        name=col_name,
-        bq_type=_ONTOLOGY_TO_BQ_TYPE[prop.type],
-        not_null=False,
-    ))
+    prop_columns.append(
+        _ScaffoldColumn(
+            name=col_name,
+            bq_type=_ONTOLOGY_TO_BQ_TYPE[prop.type],
+            not_null=False,
+        )
+    )
 
   keys: Keys | None = rel.keys
   pk_col_names: tuple[str, ...] | None = None
@@ -258,11 +264,13 @@ def _resolve_rel_table(
     rel_pk_cols: list[_ScaffoldColumn] = []
     for pk_name in keys.primary:
       prop = pk_prop_map[pk_name]
-      rel_pk_cols.append(_ScaffoldColumn(
-          name=_apply_naming(prop.name, naming),
-          bq_type=_ONTOLOGY_TO_BQ_TYPE[prop.type],
-          not_null=True,
-      ))
+      rel_pk_cols.append(
+          _ScaffoldColumn(
+              name=_apply_naming(prop.name, naming),
+              bq_type=_ONTOLOGY_TO_BQ_TYPE[prop.type],
+              not_null=True,
+          )
+      )
     # Remove PK props from prop_columns (they go first).
     pk_names_set = {_apply_naming(n, naming) for n in keys.primary}
     prop_columns = [c for c in prop_columns if c.name not in pk_names_set]
@@ -276,9 +284,13 @@ def _resolve_rel_table(
     remaining: list[_ScaffoldColumn] = []
     for c in prop_columns:
       if c.name in add_names_set:
-        additional_cols.append(_ScaffoldColumn(
-            name=c.name, bq_type=c.bq_type, not_null=True,
-        ))
+        additional_cols.append(
+            _ScaffoldColumn(
+                name=c.name,
+                bq_type=c.bq_type,
+                not_null=True,
+            )
+        )
       else:
         remaining.append(c)
     columns = tuple(from_cols + to_cols + additional_cols + remaining)
@@ -307,9 +319,7 @@ def _resolve_rel_table(
   from_ref_cols = tuple(
       _apply_naming(n, naming) for n in from_entity.keys.primary
   )
-  to_ref_cols = tuple(
-      _apply_naming(n, naming) for n in to_entity.keys.primary
-  )
+  to_ref_cols = tuple(_apply_naming(n, naming) for n in to_entity.keys.primary)
 
   foreign_keys = (
       _ScaffoldFK(
@@ -343,9 +353,7 @@ def _emit_entity_ddl(table: _ScaffoldEntityTable) -> str:
   for col in table.columns:
     nn = " NOT NULL" if col.not_null else ""
     parts.append(f"  {col.name} {col.bq_type}{nn}")
-  parts.append(
-      f"  PRIMARY KEY ({', '.join(table.pk_columns)}) NOT ENFORCED"
-  )
+  parts.append(f"  PRIMARY KEY ({', '.join(table.pk_columns)}) NOT ENFORCED")
   lines.append(",\n".join(parts))
   lines.append(");")
   return "\n".join(lines) + "\n"
@@ -358,9 +366,7 @@ def _emit_rel_ddl(table: _ScaffoldRelTable) -> str:
     nn = " NOT NULL" if col.not_null else ""
     parts.append(f"  {col.name} {col.bq_type}{nn}")
   if table.pk_columns is not None:
-    parts.append(
-        f"  PRIMARY KEY ({', '.join(table.pk_columns)}) NOT ENFORCED"
-    )
+    parts.append(f"  PRIMARY KEY ({', '.join(table.pk_columns)}) NOT ENFORCED")
   for fk in table.foreign_keys:
     fk_cols = ", ".join(fk.columns)
     ref_cols = ", ".join(fk.ref_columns)
@@ -404,57 +410,27 @@ def _emit_binding_yaml(
     for entity, et in zip(ontology.entities, entity_tables):
       lines.append(f"  - name: {entity.name}")
       lines.append(f"    source: {et.table_name}")
-      non_derived = [
-          p for p in entity.properties if p.expr is None
-      ]
+      non_derived = [p for p in entity.properties if p.expr is None]
       if non_derived:
         lines.append("    properties:")
         for prop in non_derived:
           col = _apply_naming(prop.name, naming)
-          lines.append(
-              "      - {"
-              f"name: {prop.name}, column: {col}"
-              "}"
-          )
+          lines.append("      - {" f"name: {prop.name}, column: {col}" "}")
 
   if rel_tables:
     lines.append("relationships:")
     for rel, rt in zip(ontology.relationships, rel_tables):
-      from_entity = next(
-          e for e in ontology.entities if e.name == rel.from_
-      )
-      to_entity = next(
-          e for e in ontology.entities if e.name == rel.to
-      )
-      assert from_entity.keys and from_entity.keys.primary
-      assert to_entity.keys and to_entity.keys.primary
-
-      from_col_names = [
-          f"from_{_apply_naming(n, naming)}"
-          for n in from_entity.keys.primary
-      ]
-      to_col_names = [
-          f"to_{_apply_naming(n, naming)}"
-          for n in to_entity.keys.primary
-      ]
+      from_fk, to_fk = rt.foreign_keys
       lines.append(f"  - name: {rel.name}")
       lines.append(f"    source: {rt.table_name}")
-      lines.append(
-          f"    from_columns: [{', '.join(from_col_names)}]"
-      )
-      lines.append(
-          f"    to_columns: [{', '.join(to_col_names)}]"
-      )
+      lines.append(f"    from_columns: [{', '.join(from_fk.columns)}]")
+      lines.append(f"    to_columns: [{', '.join(to_fk.columns)}]")
       non_derived = [p for p in rel.properties if p.expr is None]
       if non_derived:
         lines.append("    properties:")
         for prop in non_derived:
           col = _apply_naming(prop.name, naming)
-          lines.append(
-              "      - {"
-              f"name: {prop.name}, column: {col}"
-              "}"
-          )
+          lines.append("      - {" f"name: {prop.name}, column: {col}" "}")
 
   return "\n".join(lines) + "\n"
 

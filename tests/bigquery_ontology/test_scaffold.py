@@ -22,10 +22,10 @@ import pytest
 
 from bigquery_ontology import load_binding_from_string
 from bigquery_ontology import load_ontology_from_string
+from bigquery_ontology import scaffold
+from bigquery_ontology.ontology_models import PropertyType
 from bigquery_ontology.scaffold import _ONTOLOGY_TO_BQ_TYPE
 from bigquery_ontology.scaffold import _to_snake_case
-from bigquery_ontology.scaffold import scaffold
-from bigquery_ontology.ontology_models import PropertyType
 
 # ===================================================================== #
 # Step 1 — snake-case converter                                         #
@@ -118,14 +118,16 @@ class TestEntityDDL:
   def test_single_pk_entity(self):
     ontology = load_ontology_from_string(textwrap.dedent(_PERSON_ONTOLOGY))
     ddl, _ = scaffold(ontology, dataset="my_dataset")
-    expected = textwrap.dedent("""\
+    expected = textwrap.dedent(
+        """\
         CREATE TABLE `my_dataset.person` (
           party_id STRING NOT NULL,
           name STRING,
           dob DATE,
           PRIMARY KEY (party_id) NOT ENFORCED
         );
-    """)
+    """
+    )
     assert ddl == expected
 
   def test_compound_pk_entity(self):
@@ -133,14 +135,16 @@ class TestEntityDDL:
         textwrap.dedent(_COMPOUND_KEY_ONTOLOGY)
     )
     ddl, _ = scaffold(ontology, dataset="my_dataset")
-    expected = textwrap.dedent("""\
+    expected = textwrap.dedent(
+        """\
         CREATE TABLE `my_dataset.account_day` (
           account_id STRING NOT NULL,
           as_of DATE NOT NULL,
           balance NUMERIC,
           PRIMARY KEY (account_id, as_of) NOT ENFORCED
         );
-    """)
+    """
+    )
     assert ddl == expected
 
   def test_derived_properties_excluded(self):
@@ -259,11 +263,10 @@ _REL_DERIVED_ONTOLOGY = """
 class TestRelationshipDDL:
 
   def test_no_keys_relationship(self):
-    ontology = load_ontology_from_string(
-        textwrap.dedent(_FOLLOWS_ONTOLOGY)
-    )
+    ontology = load_ontology_from_string(textwrap.dedent(_FOLLOWS_ONTOLOGY))
     ddl, _ = scaffold(ontology, dataset="my_dataset")
-    expected_rel = textwrap.dedent("""\
+    expected_rel = textwrap.dedent(
+        """\
         CREATE TABLE `my_dataset.follows` (
           from_party_id STRING NOT NULL,
           to_party_id STRING NOT NULL,
@@ -271,15 +274,15 @@ class TestRelationshipDDL:
           FOREIGN KEY (from_party_id) REFERENCES `my_dataset.person`(party_id) NOT ENFORCED,
           FOREIGN KEY (to_party_id) REFERENCES `my_dataset.person`(party_id) NOT ENFORCED
         );
-    """)
+    """
+    )
     assert expected_rel in ddl
 
   def test_keys_additional_relationship(self):
-    ontology = load_ontology_from_string(
-        textwrap.dedent(_HOLDING_ONTOLOGY)
-    )
+    ontology = load_ontology_from_string(textwrap.dedent(_HOLDING_ONTOLOGY))
     ddl, _ = scaffold(ontology, dataset="my_dataset")
-    expected_rel = textwrap.dedent("""\
+    expected_rel = textwrap.dedent(
+        """\
         CREATE TABLE `my_dataset.holding` (
           from_account_id STRING NOT NULL,
           from_as_of DATE NOT NULL,
@@ -290,13 +293,12 @@ class TestRelationshipDDL:
           FOREIGN KEY (from_account_id, from_as_of) REFERENCES `my_dataset.account`(account_id, as_of) NOT ENFORCED,
           FOREIGN KEY (to_isin) REFERENCES `my_dataset.security`(isin) NOT ENFORCED
         );
-    """)
+    """
+    )
     assert expected_rel in ddl
 
   def test_keys_primary_relationship(self):
-    ontology = load_ontology_from_string(
-        textwrap.dedent(_REL_OWN_PK_ONTOLOGY)
-    )
+    ontology = load_ontology_from_string(textwrap.dedent(_REL_OWN_PK_ONTOLOGY))
     ddl, _ = scaffold(ontology, dataset="ds")
     assert "transfer_id STRING NOT NULL" in ddl
     assert "PRIMARY KEY (transfer_id) NOT ENFORCED" in ddl
@@ -304,16 +306,12 @@ class TestRelationshipDDL:
     assert "to_person_id STRING NOT NULL" in ddl
 
   def test_endpoint_column_collision(self):
-    ontology = load_ontology_from_string(
-        textwrap.dedent(_COLLISION_ONTOLOGY)
-    )
+    ontology = load_ontology_from_string(textwrap.dedent(_COLLISION_ONTOLOGY))
     with pytest.raises(ValueError, match="collides with a generated endpoint"):
       scaffold(ontology, dataset="ds")
 
   def test_derived_properties_excluded_from_rel(self):
-    ontology = load_ontology_from_string(
-        textwrap.dedent(_REL_DERIVED_ONTOLOGY)
-    )
+    ontology = load_ontology_from_string(textwrap.dedent(_REL_DERIVED_ONTOLOGY))
     ddl, _ = scaffold(ontology, dataset="ds")
     assert "label" not in ddl
     assert "since DATE" in ddl
@@ -327,11 +325,10 @@ class TestRelationshipDDL:
 class TestBindingYAML:
 
   def test_person_follows_binding(self):
-    ontology = load_ontology_from_string(
-        textwrap.dedent(_FOLLOWS_ONTOLOGY)
-    )
+    ontology = load_ontology_from_string(textwrap.dedent(_FOLLOWS_ONTOLOGY))
     _, binding = scaffold(ontology, dataset="my_dataset")
-    expected = textwrap.dedent("""\
+    expected = textwrap.dedent(
+        """\
         # Generated by gm scaffold. This file is user-owned \u2014 edit freely.
         binding: my_dataset
         ontology: test
@@ -352,13 +349,12 @@ class TestBindingYAML:
             to_columns: [to_party_id]
             properties:
               - {name: since, column: since}
-    """)
+    """
+    )
     assert binding == expected
 
   def test_binding_round_trip(self):
-    ontology = load_ontology_from_string(
-        textwrap.dedent(_FOLLOWS_ONTOLOGY)
-    )
+    ontology = load_ontology_from_string(textwrap.dedent(_FOLLOWS_ONTOLOGY))
     _, binding_text = scaffold(
         ontology, dataset="my_dataset", project="my_project"
     )
@@ -388,9 +384,7 @@ class TestBindingYAML:
     assert "FOREIGN KEY" not in ddl
 
   def test_determinism(self):
-    ontology = load_ontology_from_string(
-        textwrap.dedent(_FOLLOWS_ONTOLOGY)
-    )
+    ontology = load_ontology_from_string(textwrap.dedent(_FOLLOWS_ONTOLOGY))
     ddl1, b1 = scaffold(ontology, dataset="ds")
     ddl2, b2 = scaffold(ontology, dataset="ds")
     assert ddl1 == ddl2
@@ -400,7 +394,8 @@ class TestBindingYAML:
 class TestRejectExtends:
 
   def test_entity_extends_rejected(self):
-    yaml = textwrap.dedent("""
+    yaml = textwrap.dedent(
+        """
       ontology: test
       entities:
         - name: Party
@@ -411,13 +406,15 @@ class TestRejectExtends:
           extends: Party
           properties:
             - {name: name, type: string}
-    """)
+    """
+    )
     ontology = load_ontology_from_string(yaml)
     with pytest.raises(ValueError, match="extends"):
       scaffold(ontology, dataset="ds")
 
   def test_relationship_extends_rejected(self):
-    yaml = textwrap.dedent("""
+    yaml = textwrap.dedent(
+        """
       ontology: test
       entities:
         - name: Person
@@ -436,7 +433,8 @@ class TestRejectExtends:
           to: Person
           properties:
             - {name: depth, type: integer}
-    """)
+    """
+    )
     ontology = load_ontology_from_string(yaml)
     with pytest.raises(ValueError, match="extends"):
       scaffold(ontology, dataset="ds")
