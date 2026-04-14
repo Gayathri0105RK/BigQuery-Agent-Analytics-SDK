@@ -1,6 +1,6 @@
 # Ontology User Manual
 
-## Overview
+## Part 1: Guide
 
 ### What Is an Ontology?
 
@@ -14,8 +14,6 @@ An **ontology** is a formal, explicit specification of a shared conceptualizatio
 The key distinction from a database schema is that an ontology captures **meaning**, not just structure. It answers "what does this data represent in the real world?" rather than "what columns does this table have?" This makes ontologies portable across different storage backends — the same ontology can be realized on BigQuery, Spanner, or any other data warehouse.
 
 ### Why Use an Ontology?
-
-Ontologies provide several benefits for data-driven systems:
 
 - **Shared vocabulary** — teams agree on what "Account", "Transaction", or "Security" means, preventing ambiguity across systems.
 - **Backend independence** — the logical model is defined once and can be mapped to different physical storage systems without changing the model itself.
@@ -36,8 +34,6 @@ ontology  +  binding  →  CREATE PROPERTY GRAPH DDL
 
 This separation means the same ontology can have multiple bindings — one per environment, backend, or data source — without duplicating the logical model.
 
-The workflow uses three artifacts:
-
 | Artifact | File convention | Purpose |
 |----------|----------------|---------|
 | Ontology | `*.ontology.yaml` | Logical graph schema (what exists) |
@@ -48,102 +44,61 @@ The `gm` CLI validates and compiles these files.
 
 ---
 
-## Ontology YAML Specification
+### Writing an Ontology
 
-### Top-Level Structure
+An ontology YAML file has four main parts: a name, entities, relationships, and optional metadata.
 
-```yaml
-ontology: <string>                        # required — ontology identifier
-version: <string>                         # optional — e.g. "0.1"
-entities:                                 # required — at least one entity
-  - <Entity>
-relationships:                            # optional — defaults to empty
-  - <Relationship>
-description: <string>                     # optional
-synonyms: [<string>, ...]                 # optional
-annotations:                              # optional — open-ended metadata
-  <key>: <string or list of strings>
-```
+#### Naming and versioning
 
-- `ontology` is the identifier that bindings reference (by name, not file path).
-- `version` accepts unquoted numbers in YAML (e.g. `version: 0.1`) — they are coerced to strings automatically.
-- `entities` must be non-empty. An ontology with no node types has nothing for relationships or bindings to attach to.
-- `relationships` is optional. Pure taxonomies (entities + inheritance, no edges) are legal.
-- Unknown top-level keys are rejected.
-
-### Entities (Node Types)
+Every ontology starts with a name. Bindings reference this name to find their companion ontology:
 
 ```yaml
-- name: <string>                          # required — unique within ontology
-  extends: <string>                       # optional — parent entity name
-  keys:                                   # required (directly or via inheritance)
-    primary: [<property_name>, ...]       # required on entities
-    alternate:                            # optional — additional unique tuples
-      - [<property_name>, ...]
-  properties:                             # optional — defaults to empty
-    - <Property>
-  description: <string>                   # optional
-  synonyms: [<string>, ...]               # optional
-  annotations: {<key>: <value>}           # optional
+ontology: finance
+version: 0.1
 ```
 
-**Rules:**
+#### Defining entities
 
-- Entity names must be unique within the ontology and cannot collide with relationship names.
-- Every entity must have an effective `keys.primary` — either declared directly or inherited from a parent.
-- `keys.additional` is forbidden on entities (it is relationship-only).
-- When using `extends`, the child inherits the parent's properties and keys. Redeclaring either is an error.
-- `keys` is marked optional in the schema because a child entity inherits its parent's keys and must leave the field unset.
-
-### Relationships (Edge Types)
+Entities are the node types in your graph. Each entity needs a name, a primary key, and its properties:
 
 ```yaml
-- name: <string>                          # required — unique within ontology
-  extends: <string>                       # optional — parent relationship name
-  keys:                                   # optional
-    primary: [<property_name>, ...]       # XOR with additional
-    additional: [<property_name>, ...]    # XOR with primary
-    alternate:                            # optional — requires primary
-      - [<property_name>, ...]
-  from: <entity_name>                     # required — source entity
-  to: <entity_name>                       # required — target entity
-  cardinality: <Cardinality>              # optional — defaults to unconstrained
-  properties:                             # optional — defaults to empty
-    - <Property>
-  description: <string>                   # optional
-  synonyms: [<string>, ...]               # optional
-  annotations: {<key>: <value>}           # optional
+entities:
+  - name: Account
+    keys:
+      primary: [account_id]
+    properties:
+      - name: account_id
+        type: string
+      - name: opened_at
+        type: timestamp
 ```
 
-**Rules:**
+The `primary` key tells the system how to uniquely identify each Account. Every key column must be a declared property.
 
-- `from` and `to` must reference declared entities.
-- `primary` and `additional` are mutually exclusive. You may declare one, the other, or neither — but not both.
-- When neither is declared, multi-edges are permitted (no uniqueness constraint).
-- A child relationship may narrow its endpoints covariantly: the child's `from`/`to` must equal or be a subtype of the parent's corresponding endpoint.
-- A child may not redefine the parent's cardinality. It may omit it (inheriting silently) or restate the same value.
+#### Defining relationships
 
-### Properties
+Relationships connect entities. They have a `from` (source) and `to` (destination) entity, and optionally their own properties:
 
 ```yaml
-- name: <string>                          # required — unique within parent
-  type: <PropertyType>                    # required
-  expr: <string>                          # optional — marks a derived property
-  description: <string>                   # optional
-  synonyms: [<string>, ...]               # optional
-  annotations: {<key>: <value>}           # optional
+relationships:
+  - name: HOLDS
+    from: Account
+    to: Security
+    cardinality: many_to_many
+    properties:
+      - name: as_of
+        type: timestamp
+      - name: quantity
+        type: double
 ```
 
-A property without `expr` is a **stored property** — its value comes from a physical column specified in the binding.
+#### Property types
 
-A property with `expr` is a **derived property** — its value is computed from a BigQuery SQL expression that references sibling properties on the same entity or relationship. Derived properties:
+Properties have a `name` and a `type`. The eleven supported types are: `string`, `bytes`, `integer`, `double`, `numeric`, `boolean`, `date`, `time`, `datetime`, `timestamp`, and `json`. These are logical types — backend-specific mapping happens at binding time.
 
-- Must NOT appear in a binding (the compiler substitutes the expression).
-- May only reference other properties on the same entity/relationship.
-- Must not use subqueries, window functions, or aggregates.
-- Circular references between derived properties are detected and rejected.
+#### Derived properties
 
-Example:
+A property can compute its value from other properties on the same entity using a BigQuery SQL expression. Mark it with `expr:`:
 
 ```yaml
 properties:
@@ -156,82 +111,37 @@ properties:
     expr: "first_name || ' ' || last_name"
 ```
 
-### Property Types
+Derived properties do not appear in the binding — the compiler substitutes the expression with bound column names automatically.
 
-Eleven logical types are supported, each mapping to a GoogleSQL type:
+#### Relationship keys
 
-| Logical type | Description |
-|-------------|-------------|
-| `string` | Variable-length text |
-| `bytes` | Binary data |
-| `integer` | 64-bit integer |
-| `double` | 64-bit floating point |
-| `numeric` | Arbitrary-precision decimal |
-| `boolean` | True/false |
-| `date` | Calendar date |
-| `time` | Time of day |
-| `datetime` | Date and time without timezone |
-| `timestamp` | Date and time with timezone |
-| `json` | JSON document |
+Relationships have three options for uniqueness:
 
-These types are backend-neutral. Backend-specific gaps (e.g. Spanner not supporting `time` or `datetime`) are surfaced at binding time, not ontology time.
+- **`primary`** — the edge has its own standalone identity (e.g. a `TRANSFER` keyed by `transaction_id`).
+- **`additional`** — the edge is unique within an endpoint pair (e.g. `HOLDS` keyed by `as_of`, meaning for a given account-security pair, no two holdings share the same `as_of` date).
+- **No keys** — multi-edges are allowed between the same pair of nodes. Omit the `keys` field entirely.
 
-### Keys
-
-Keys define uniqueness constraints — they tell the system how to identify individual rows in the underlying data. Understanding keys is important because they directly affect how the compiled DDL identifies nodes and edges in the property graph.
-
-There are three roles:
-
-**`primary`** — the identity of a row.
-
-- Required on entities (directly or inherited).
-- Optional on relationships.
-- Each entry must name a declared property.
-- List must be non-empty.
-
-**`alternate`** — additional unique tuples beyond the primary key.
-
-- Only meaningful alongside a `primary` key.
-- Each alternate key is a list of property names.
-- No alternate key may duplicate the primary key or another alternate key.
-- Each alternate key list must be non-empty with no duplicate columns.
-
-**`additional`** — uniqueness without picking a primary. Relationship-only.
-
-- Mutually exclusive with `primary`.
-- Cannot be combined with `alternate` keys.
-- The effective key becomes `(from_endpoint, to_endpoint, additional_columns)`.
-
-**Entity key modes:**
+`primary` and `additional` are mutually exclusive.
 
 ```yaml
-# Entity: primary required, additional forbidden
-keys:
-  primary: [account_id]
-  alternate:                    # optional
-    - [email]
-    - [tenant_id, external_id]
+# Standalone identity
+- name: TRANSFER
+  keys:
+    primary: [transaction_id]
+  from: Account
+  to: Account
+
+# Endpoint-extended identity
+- name: HOLDS
+  keys:
+    additional: [as_of]
+  from: Account
+  to: Security
 ```
 
-**Relationship key modes:**
+#### Inheritance
 
-```yaml
-# Mode A: standalone identity
-keys:
-  primary: [transaction_id]
-
-# Mode B: endpoint-extended identity
-keys:
-  additional: [as_of]
-# Effective key = (from_entity_pk, to_entity_pk, as_of)
-
-# Mode C: no keys (multi-edges permitted)
-# Simply omit the keys field entirely
-```
-
-### Inheritance
-
-Ontologies support single-parent inheritance via `extends`, modeling "is-a" relationships between types. This is the same concept as class inheritance in object-oriented programming: a child type is a more specific version of its parent.
+Entities can extend other entities, inheriting their properties and keys:
 
 ```yaml
 entities:
@@ -257,455 +167,134 @@ entities:
         type: string
 ```
 
-Here, `Person` and `Organization` are both kinds of `Party`. They inherit `party_id` and `name` from `Party`, and each adds its own properties. A query matching `Party` nodes would match both `Person` and `Organization` instances.
+`Person` and `Organization` inherit `party_id` and `name` from `Party` without redeclaring them. A query matching `Party` nodes would match both.
 
-**Inheritance rules:**
+Relationships can also extend other relationships, but child endpoints must narrow covariantly — the child's `from`/`to` must be the same entity as, or a subtype of, the parent's.
 
-- Entities extend entities. Relationships extend relationships. Cross-kind inheritance is not allowed.
-- Only single-parent inheritance is supported (no multiple inheritance).
-- A child inherits all properties and keys from its parent chain.
-- Redeclaring an inherited property (by name) is an error — the child gets it automatically.
-- Redeclaring inherited keys is an error.
-- Cyclic inheritance chains are detected and rejected.
-- A child relationship may not redefine the parent's cardinality.
+**Current limitation:** The v0 compiler does not support `extends`. Ontologies with inheritance pass validation but fail at compile time.
 
-**Covariant endpoint narrowing for relationships:**
+#### Metadata
 
-When a relationship extends another, its endpoints (`from`/`to`) must be the same entity as, or a subtype of, the parent's corresponding endpoint. This is called covariant narrowing and ensures type safety.
+You can attach descriptions, synonyms, and free-form annotations to any element:
 
 ```yaml
-relationships:
-  # Parent: any Account can hold any Security
-  - name: HOLDS
-    from: Account
-    to: Security
-
-  # Child: SavingsAccount (a subtype of Account) holds Bonds (a subtype of Security)
-  # This is valid because SavingsAccount ⊂ Account and Bond ⊂ Security
-  - name: SAVINGS_HOLDS
-    extends: HOLDS
-    from: SavingsAccount
-    to: Bond
-```
-
-The child may narrow the endpoints (use more specific types) but never widen them. This guarantees that anywhere you can use the parent relationship, the child relationship is also valid.
-
-**Current limitation:** The v0 compiler does not support `extends`. Ontologies with inheritance pass validation but fail at compile time. Inheritance lowering is planned for a future version.
-
-### Cardinality
-
-Cardinality describes the multiplicity of a relationship's endpoints:
-
-| Value | Meaning |
-|-------|---------|
-| `one_to_one` | Each `from` entity connects to at most one `to`, and vice versa |
-| `one_to_many` | Each `from` entity connects to many `to` entities, each `to` connects to at most one `from` |
-| `many_to_one` | Each `from` entity connects to at most one `to`, each `to` connects to many `from` entities |
-| `many_to_many` | No multiplicity constraint |
-
-Cardinality is optional. When absent, the relationship is treated as unconstrained.
-
-### Annotations and Synonyms
-
-**Annotations** are an open-ended bag of string metadata attached to any ontology element. Values are either a single string or a list of strings:
-
-```yaml
+ontology: finance
+description: Party, account, and security model for finance domain.
+synonyms:
+  - finance-core
 annotations:
   doc_id: "FIBO-001"
-  pii_category: "PERSONAL"
   audit_tags:
     - "HIPAA"
     - "GDPR"
 ```
 
-Annotations are consumed by downstream tools (catalogs, lineage, search) without the ontology itself needing to understand them.
-
-**Synonyms** are alternative names for the element:
-
-```yaml
-synonyms:
-  - finance-core
-  - fin-domain
-```
-
-### Validation Rules
-
-The ontology loader enforces 13 cross-element semantic rules (beyond the per-field shape validation that Pydantic handles):
-
-1. Entity names are unique within the ontology.
-2. Relationship names are unique within the ontology.
-3. Entity and relationship names are disjoint — no name can be used by both.
-4. Property names are unique within their parent entity or relationship.
-5. `extends` must reference a declared same-kind element (entity extends entity, relationship extends relationship).
-6. No cycles in `extends` chains.
-7. Redeclaring an inherited property (by name) is an error.
-8. Redeclaring inherited keys is an error.
-9. Every key column must reference a declared property (including inherited ones).
-10. Alternate keys must be non-empty, have no duplicate columns, and not duplicate another key.
-11. On entities: `primary` is required (directly or inherited), `additional` is forbidden.
-12. On relationships: `primary` and `additional` are mutually exclusive.
-13. Relationship endpoints (`from`, `to`) must reference declared entities, and child relationships must covariantly narrow parent endpoints.
-
-Unknown YAML keys at any level are rejected (via Pydantic `extra="forbid"`).
+Annotations are consumed by downstream tools (catalogs, lineage, search) without the ontology needing to understand them. Values are strings or lists of strings.
 
 ---
 
-## Binding YAML Specification
+### Writing a Binding
 
-A binding attaches a logical ontology to physical BigQuery tables and columns. It answers the question the ontology deliberately leaves open: "where does this data actually live?"
+A binding attaches your ontology to physical BigQuery tables and columns. It answers the question the ontology deliberately leaves open: "where does this data actually live?"
 
-One binding file describes one deployment target. This separation is intentional — the same ontology can have different bindings for different environments (dev, staging, production), different backends, or different data sources. The logical model stays the same; only the physical mapping changes.
+#### Structure
 
-### Top-Level Structure
-
-```yaml
-binding: <string>                         # required — binding identifier
-ontology: <string>                        # required — ontology name to realize
-target:                                   # required — deployment target
-  backend: bigquery                       # required — only "bigquery" today
-  project: <string>                       # required — GCP project ID
-  dataset: <string>                       # required — BigQuery dataset
-entities:                                 # optional — defaults to empty
-  - <EntityBinding>
-relationships:                            # optional — defaults to empty
-  - <RelationshipBinding>
-```
-
-- `ontology` is the ontology's name (its `ontology:` field), not a file path. The loader resolves it to a file.
-- A binding may realize a subset of the referenced ontology — any entity or relationship left out is simply absent from this target.
-
-### Target
+A binding names itself, references an ontology, declares a target, and maps entities and relationships:
 
 ```yaml
+binding: finance-bq-prod
+ontology: finance
 target:
   backend: bigquery
-  project: my-gcp-project
-  dataset: analytics
+  project: my-project
+  dataset: finance
 ```
 
-`project` and `dataset` serve as the default namespace for resolving bare table names in entity/relationship source references.
+The `ontology` field is the ontology's name (not a file path). When loading, the system looks for `finance.ontology.yaml` in the same directory.
 
-### Entity Bindings
+#### Mapping entities
+
+For each entity you want to realize, specify the BigQuery table and map every non-derived property to a physical column:
 
 ```yaml
 entities:
-  - name: Account                         # must match ontology entity name
-    source: raw.accounts                  # BigQuery table or view
+  - name: Account
+    source: raw.accounts
     properties:
-      - name: account_id                  # ontology property name
-        column: acct_id                   # physical column name
+      - name: account_id
+        column: acct_id
       - name: opened_at
         column: created_ts
 ```
 
-**Rules:**
+You must bind **every** non-derived property — no cherry-picking. Derived properties (those with `expr:`) must **not** appear in the binding. You may omit entire entities from the binding; they simply won't be part of this target.
 
-- `name` must reference a declared entity in the ontology.
-- `source` is the physical BigQuery table or view.
-- Every non-derived property on the entity (including inherited ones) must have a `PropertyBinding`. No cherry-picking.
-- Derived properties (`expr:` in ontology) must NOT appear in the binding.
-- The primary key is implicit: the ontology names the key properties, and the matching `PropertyBinding` entries supply the physical columns.
+#### Mapping relationships
 
-### Relationship Bindings
+Relationships additionally need `from_columns` and `to_columns` to specify which columns in the edge table carry the endpoint keys:
 
 ```yaml
 relationships:
-  - name: HOLDS                           # must match ontology relationship name
-    source: raw.holdings                  # BigQuery edge table
-    from_columns: [account_id]            # columns carrying source entity key
-    to_columns: [security_id]             # columns carrying target entity key
-    properties:                           # optional — defaults to empty
+  - name: HOLDS
+    source: raw.holdings
+    from_columns: [account_id]
+    to_columns: [security_id]
+    properties:
       - name: as_of
         column: snapshot_date
       - name: quantity
         column: qty
 ```
 
-**Rules:**
-
-- `name` must reference a declared relationship in the ontology.
-- `from_columns` and `to_columns` are the columns in the edge table that carry the source and target entity keys.
-- The arity (number of columns) of `from_columns` must match the source entity's primary key length.
-- The arity of `to_columns` must match the target entity's primary key length.
-- Both `from_columns` and `to_columns` must be non-empty lists.
-- Property coverage follows the same total-coverage rule as entities: every non-derived property must be bound.
-
-### Coverage Rules
-
-The binding follows a **partial-at-ontology-level, total-within-each-element** model:
-
-- You may omit entire entities or relationships from the binding. Anything absent is not realized on this target.
-- Once you include an entity or relationship, you must bind **every** non-derived property (including inherited ones).
-- Derived properties must **never** appear in a binding.
-
-### Validation Rules
-
-The binding loader enforces these semantic rules against the paired ontology:
-
-1. The binding's `ontology` field must match the ontology's `ontology` field.
-2. Entity and relationship binding names are unique within the binding and across kinds.
-3. Every bound name must reference a declared element in the ontology.
-4. Total property coverage within each bound entity/relationship (all non-derived properties bound, no derived properties bound, no duplicates).
-5. Relationship `from_columns` arity matches the source entity's primary key arity.
-6. Relationship `to_columns` arity matches the target entity's primary key arity.
-7. Both endpoints of a bound relationship must have at least one bound descendant entity in the binding (no dangling edges).
+The arity (number of columns) of `from_columns` must match the source entity's primary key length, and likewise for `to_columns`.
 
 ---
 
-## CLI Reference
+### Validating and Compiling
 
-The `gm` command-line tool validates and compiles ontology and binding YAML files.
+The `gm` CLI validates and compiles your files.
 
-### Installation
+#### Validate
 
-The `gm` command is installed as a console script entry point from the `bigquery_ontology` package:
-
-```bash
-pip install -e .
-gm --help
-```
-
-### `gm validate`
-
-Validate a single ontology or binding YAML file. The file kind is auto-detected by checking for a top-level `ontology:` or `binding:` key.
-
-```
-gm validate <file> [--json] [--ontology PATH]
-```
-
-**Arguments:**
-
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `file` | yes | Path to an ontology or binding YAML file |
-
-**Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--json` | false | Emit structured JSON errors on stderr instead of human-readable text |
-| `--ontology PATH` | auto | For binding files: path to the companion ontology YAML. By default, looks for `<ontology_name>.ontology.yaml` in the same directory as the binding |
-
-**Behavior:**
-
-- For ontology files: validates shape and cross-element semantics. Success produces no output.
-- For binding files: auto-discovers or uses `--ontology` to locate the companion ontology, validates both, then validates the binding against the ontology. Success produces no output.
-
-**Examples:**
+Run `gm validate` on any ontology or binding file. The file kind is auto-detected:
 
 ```bash
-# Validate an ontology
 gm validate finance.ontology.yaml
-
-# Validate a binding (auto-discovers companion ontology)
 gm validate finance.binding.yaml
-
-# Validate a binding with explicit ontology path
-gm validate finance.binding.yaml --ontology /path/to/finance.ontology.yaml
-
-# Get JSON-formatted errors
-gm validate finance.binding.yaml --json
 ```
 
-### `gm compile`
-
-Compile a binding YAML file into BigQuery `CREATE PROPERTY GRAPH` DDL. The input must be a binding file, not an ontology — ontologies are backend-neutral and need a binding to resolve physical tables and columns.
+Success produces no output (exit code 0). Errors print to stderr with file, location, and rule:
 
 ```
-gm compile <file> [--ontology PATH] [-o PATH] [--json]
+finance.ontology.yaml:0:0: ontology-validation — Duplicate entity name: 'Account'
 ```
 
-**Arguments:**
+When validating a binding, the companion ontology is auto-discovered (`finance.ontology.yaml` next to the binding). Override with `--ontology PATH`.
 
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `file` | yes | Path to a binding YAML file |
+#### Compile
 
-**Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--ontology PATH` | auto | Path to companion ontology YAML |
-| `-o PATH` / `--output PATH` | stdout | Write DDL to this file (overwritten if exists) |
-| `--json` | false | Emit structured JSON errors on stderr |
-
-**Behavior:**
-
-- Validates both the binding and its companion ontology before compiling. Any validation error fails the compile — no partial DDL is emitted.
-- On success: writes the DDL to stdout (or to `-o` file).
-- On failure: writes errors to stderr.
-
-**Examples:**
+Run `gm compile` on a binding file to produce `CREATE PROPERTY GRAPH` DDL:
 
 ```bash
-# Compile and print DDL to stdout
+# Print to stdout
 gm compile finance.binding.yaml
 
-# Compile with explicit ontology path
-gm compile finance.binding.yaml --ontology /path/to/finance.ontology.yaml
-
-# Write DDL to a file
+# Write to file
 gm compile finance.binding.yaml -o graph_ddl.sql
 
 # Pipe directly to BigQuery
 gm compile finance.binding.yaml | bq query --use_legacy_sql=false -
 ```
 
-### Exit Codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Validation or compilation error (user-fixable) |
-| 2 | Usage error (bad flag, missing file, missing companion ontology, compile invoked on non-binding) |
-| 3 | Internal error |
-
-### Error Formats
-
-**Human-readable (default):**
-
-```
-finance.ontology.yaml:0:0: ontology-validation — Duplicate entity name: 'Account'
-```
-
-Format: `<file>:<line>:<col>: <rule> — <message>`
-
-**JSON (with `--json`):**
-
-```json
-[
-  {
-    "file": "finance.ontology.yaml",
-    "line": 0,
-    "col": 0,
-    "rule": "ontology-validation",
-    "severity": "error",
-    "message": "Duplicate entity name: 'Account'"
-  }
-]
-```
-
-**Error rule codes:**
-
-| Rule | Source |
-|------|--------|
-| `ontology-shape:<type>` | Pydantic shape validation on ontology |
-| `ontology-validation` | Semantic validation on ontology |
-| `binding-shape:<type>` | Pydantic shape validation on binding |
-| `binding-validation` | Semantic validation on binding |
-| `compile-validation` | Compile-time validation (e.g. `extends` not supported) |
-| `yaml-parse` | YAML syntax error |
-| `cli-missing-file` | File not found or not readable |
-| `cli-missing-ontology` | Companion ontology not found |
-| `cli-unknown-kind` | File is neither ontology nor binding |
-| `cli-wrong-kind` | Compile invoked on a non-binding file |
-| `cli-output-error` | Cannot write output file |
+Compilation validates both files first — any error prevents DDL output.
 
 ---
 
-## Compilation
+### End-to-End Walkthrough
 
-Compilation is the step that brings the ontology and binding together to produce executable SQL. The result is a BigQuery `CREATE PROPERTY GRAPH` statement that defines a queryable property graph over your existing tables — no data movement required. Once created, the property graph can be queried using GQL (Graph Query Language) for traversal, pattern matching, and path finding.
+Here is a complete example from YAML to DDL using a finance domain.
 
-### How It Works
-
-The compiler (`compile_graph`) takes a validated ontology and binding and produces the DDL string. It runs in two stages:
-
-**Stage 1 — Resolve.** Cross-references the ontology and binding to produce an in-memory `ResolvedGraph`:
-- Rejects `extends` (v0 does not lower inheritance).
-- Substitutes derived expressions with physical column names.
-- Wires relationship endpoints to node-table aliases and key columns.
-- Computes edge key columns from ontology key declarations.
-- Sorts node and edge tables alphabetically by name for deterministic output.
-
-**Stage 2 — Emit.** Walks the `ResolvedGraph` and renders the DDL:
-- Properties are emitted in ontology declaration order (not sorted).
-- Property lists that fit within 80 columns render inline; longer ones wrap to one property per line.
-- Output is deterministic: same inputs always produce byte-identical DDL.
-
-### Derived Expression Substitution
-
-When a derived property references other properties by name, the compiler replaces each property name with its physical column (for stored properties) or recursively substituted expression (for other derived properties):
-
-```yaml
-# Ontology
-properties:
-  - name: first_name
-    type: string
-  - name: last_name
-    type: string
-  - name: full_name
-    type: string
-    expr: "first_name || ' ' || last_name"
-```
-
-```yaml
-# Binding
-properties:
-  - name: first_name
-    column: given_name
-  - name: last_name
-    column: family_name
-  # full_name is derived — must NOT appear here
-```
-
-```sql
--- Compiled DDL output
-LABEL Person PROPERTIES (
-  given_name AS first_name,
-  family_name AS last_name,
-  (given_name || ' ' || family_name) AS full_name
-)
-```
-
-Circular references between derived properties are detected and rejected.
-
-### Edge Key Resolution
-
-Every edge table gets a `KEY (...)` clause in the DDL. The compiler determines the key columns using three mutually exclusive cases:
-
-**Case 1 — `primary` declared.** The relationship has a standalone identity (e.g. `TRANSFER` keyed by `transaction_id`). The KEY uses the bound primary-key columns.
-
-**Case 2 — `additional` declared.** The relationship identifies rows within an endpoint pair (e.g. `HOLDS` with `additional: [as_of]`). The KEY is `from_columns + to_columns + bound additional columns`.
-
-**Case 3 — No keys declared.** The default is one edge per endpoint pair. The KEY is `from_columns + to_columns`.
-
-### Output Format
-
-A BigQuery property graph is a logical overlay on existing tables — it does not copy or move data. The `CREATE PROPERTY GRAPH` statement declares which tables serve as node tables and edge tables, how they connect, and what properties they expose. Once created, the graph can be queried with GQL using `GRAPH_TABLE` or `MATCH` syntax.
-
-The compiled DDL follows this structure:
-
-```sql
-CREATE PROPERTY GRAPH <name>
-  NODE TABLES (
-    <source> AS <entity_name>
-      KEY (<key_columns>)
-      LABEL <entity_name> PROPERTIES (<property_list>),
-    ...
-  )
-  EDGE TABLES (
-    <source> AS <relationship_name>
-      KEY (<key_columns>)
-      SOURCE KEY (<from_columns>) REFERENCES <from_entity> (<from_key_columns>)
-      DESTINATION KEY (<to_columns>) REFERENCES <to_entity> (<to_key_columns>)
-      LABEL <relationship_name> PROPERTIES (<property_list>),
-    ...
-  );
-```
-
-Property rendering:
-- Stored property where the column matches the logical name: `column_name`
-- Stored property with a rename: `column_name AS logical_name`
-- Derived property: `(expression) AS logical_name`
-
----
-
-## End-to-End Example
-
-### Step 1: Define the Ontology
-
-Create `finance.ontology.yaml`:
+#### 1. Define the ontology (`finance.ontology.yaml`)
 
 ```yaml
 ontology: finance
@@ -760,9 +349,7 @@ relationships:
 description: Party, account, and security model for finance domain.
 ```
 
-### Step 2: Create the Binding
-
-Create `finance.binding.yaml` in the same directory:
+#### 2. Create the binding (`finance.binding.yaml`)
 
 ```yaml
 binding: finance-bq-prod
@@ -812,25 +399,15 @@ relationships:
         column: qty
 ```
 
-### Step 3: Validate
+#### 3. Validate and compile
 
 ```bash
-# Validate the ontology
 gm validate finance.ontology.yaml
-
-# Validate the binding (auto-discovers finance.ontology.yaml next to it)
 gm validate finance.binding.yaml
+gm compile finance.binding.yaml -o graph_ddl.sql
 ```
 
-Both commands produce no output on success (exit code 0).
-
-### Step 4: Compile to DDL
-
-```bash
-gm compile finance.binding.yaml
-```
-
-Output:
+#### 4. Generated DDL
 
 ```sql
 CREATE PROPERTY GRAPH finance
@@ -860,8 +437,326 @@ CREATE PROPERTY GRAPH finance
   );
 ```
 
-To write to a file:
+Notice how:
+- Node tables are sorted alphabetically (Account, Person, Security).
+- The `full_name` derived property becomes `(given_name || ' ' || family_name) AS full_name` — the compiler substituted bound column names into the expression.
+- The HOLDS edge KEY includes the endpoint columns plus the `additional` key column: `(account_id, security_id, snapshot_date)`.
+- Properties where the column matches the logical name (like `person_id` in the golden test) render as bare names; renames render as `column AS name`.
 
-```bash
-gm compile finance.binding.yaml -o graph_ddl.sql
+---
+
+## Part 2: Reference
+
+### Ontology YAML Schema
+
+#### Top-level fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `ontology` | string | yes | — | Ontology identifier. Bindings reference this name. |
+| `version` | string | no | — | Version string. Unquoted numbers (e.g. `0.1`) are coerced to strings. |
+| `entities` | list\<Entity\> | yes | — | At least one entity required. |
+| `relationships` | list\<Relationship\> | no | `[]` | Edge type definitions. |
+| `description` | string | no | — | Human-readable description. |
+| `synonyms` | list\<string\> | no | — | Alternative names. |
+| `annotations` | map\<string, string \| list\<string\>\> | no | — | Free-form metadata. |
+
+Unknown keys at any level are rejected.
+
+#### Entity fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | yes | — | Unique within the ontology (disjoint from relationship names). |
+| `extends` | string | no | — | Parent entity name (single inheritance). |
+| `keys` | Keys | yes* | — | *Required directly or via inheritance. Child must leave unset. |
+| `properties` | list\<Property\> | no | `[]` | Typed attributes. |
+| `description` | string | no | — | Human-readable description. |
+| `synonyms` | list\<string\> | no | — | Alternative names. |
+| `annotations` | map | no | — | Free-form metadata. |
+
+#### Relationship fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | yes | — | Unique within the ontology (disjoint from entity names). |
+| `extends` | string | no | — | Parent relationship name. |
+| `keys` | Keys | no | — | See key modes below. |
+| `from` | string | yes | — | Source entity name. |
+| `to` | string | yes | — | Target entity name. |
+| `cardinality` | enum | no | unconstrained | `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` |
+| `properties` | list\<Property\> | no | `[]` | Typed attributes. |
+| `description` | string | no | — | Human-readable description. |
+| `synonyms` | list\<string\> | no | — | Alternative names. |
+| `annotations` | map | no | — | Free-form metadata. |
+
+#### Property fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | yes | — | Unique within the parent entity or relationship. |
+| `type` | PropertyType | yes | — | See property types table. |
+| `expr` | string | no | — | BigQuery SQL expression. Marks the property as derived. |
+| `description` | string | no | — | Human-readable description. |
+| `synonyms` | list\<string\> | no | — | Alternative names. |
+| `annotations` | map | no | — | Free-form metadata. |
+
+#### Property types
+
+| Type | Description |
+|------|-------------|
+| `string` | Variable-length text |
+| `bytes` | Binary data |
+| `integer` | 64-bit integer |
+| `double` | 64-bit floating point |
+| `numeric` | Arbitrary-precision decimal |
+| `boolean` | True/false |
+| `date` | Calendar date |
+| `time` | Time of day |
+| `datetime` | Date and time without timezone |
+| `timestamp` | Date and time with timezone |
+| `json` | JSON document |
+
+#### Keys fields
+
+| Field | Type | Context | Description |
+|-------|------|---------|-------------|
+| `primary` | list\<string\> | entities (required), relationships (optional) | Row identity. Each entry must name a declared property. |
+| `alternate` | list\<list\<string\>\> | both (requires `primary`) | Additional unique tuples. No duplicates with primary or each other. |
+| `additional` | list\<string\> | relationships only | Uniqueness within endpoint pair. Mutually exclusive with `primary`. Cannot combine with `alternate`. |
+
+All lists must be non-empty when present. Empty lists (e.g. `primary: []`) are rejected at parse time.
+
+---
+
+### Binding YAML Schema
+
+#### Top-level fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `binding` | string | yes | — | Binding identifier. |
+| `ontology` | string | yes | — | Name of the ontology to realize (not a file path). |
+| `target` | Target | yes | — | Deployment target. |
+| `entities` | list\<EntityBinding\> | no | `[]` | Entity-to-table mappings. |
+| `relationships` | list\<RelationshipBinding\> | no | `[]` | Relationship-to-table mappings. |
+
+#### Target fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `backend` | enum | yes | Only `bigquery` today. |
+| `project` | string | yes | GCP project ID. |
+| `dataset` | string | yes | BigQuery dataset. |
+
+#### EntityBinding fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Must match a declared entity in the ontology. |
+| `source` | string | yes | BigQuery table or view reference. |
+| `properties` | list\<PropertyBinding\> | yes | Column mappings. |
+
+#### RelationshipBinding fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | yes | — | Must match a declared relationship in the ontology. |
+| `source` | string | yes | — | BigQuery edge table reference. |
+| `from_columns` | list\<string\> | yes | — | Columns carrying source entity key. Arity must match source entity PK. |
+| `to_columns` | list\<string\> | yes | — | Columns carrying target entity key. Arity must match target entity PK. |
+| `properties` | list\<PropertyBinding\> | no | `[]` | Column mappings. |
+
+#### PropertyBinding fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Ontology property name. Must not be a derived property. |
+| `column` | string | yes | Physical column name in the source table. |
+
+---
+
+### CLI Reference
+
+#### `gm validate`
+
 ```
+gm validate <file> [--json] [--ontology PATH]
+```
+
+| Argument/Option | Required | Default | Description |
+|-----------------|----------|---------|-------------|
+| `file` | yes | — | Path to an ontology or binding YAML file. Kind is auto-detected. |
+| `--json` | no | false | Emit structured JSON errors on stderr. |
+| `--ontology PATH` | no | auto | Companion ontology path. Default: `<ontology_name>.ontology.yaml` next to the binding. |
+
+Success: no output, exit 0. Failure: errors on stderr, exit 1 or 2.
+
+#### `gm compile`
+
+```
+gm compile <file> [--ontology PATH] [-o PATH] [--json]
+```
+
+| Argument/Option | Required | Default | Description |
+|-----------------|----------|---------|-------------|
+| `file` | yes | — | Path to a binding YAML file. Ontology files are rejected. |
+| `--ontology PATH` | no | auto | Companion ontology path. |
+| `-o` / `--output PATH` | no | stdout | Write DDL to file (overwritten if exists). |
+| `--json` | no | false | Emit structured JSON errors on stderr. |
+
+Validates both files before compiling. Any validation error prevents DDL output.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Validation or compilation error (user-fixable) |
+| 2 | Usage error (missing file, wrong file kind, missing companion ontology) |
+| 3 | Internal error |
+
+#### Error format
+
+**Human-readable (default):**
+
+```
+<file>:<line>:<col>: <rule> — <message>
+```
+
+**JSON (`--json`):**
+
+```json
+[
+  {
+    "file": "<path>",
+    "line": 0,
+    "col": 0,
+    "rule": "<rule-code>",
+    "severity": "error",
+    "message": "<message>"
+  }
+]
+```
+
+#### Error rule codes
+
+| Rule | Source |
+|------|--------|
+| `ontology-shape:<type>` | Pydantic shape validation on ontology |
+| `ontology-validation` | Semantic validation on ontology |
+| `binding-shape:<type>` | Pydantic shape validation on binding |
+| `binding-validation` | Semantic validation on binding |
+| `compile-validation` | Compile-time validation (e.g. `extends` not supported in v0) |
+| `yaml-parse` | YAML syntax error |
+| `cli-missing-file` | File not found or not readable |
+| `cli-missing-ontology` | Companion ontology not found |
+| `cli-unknown-kind` | File is neither ontology nor binding |
+| `cli-wrong-kind` | Compile invoked on a non-binding file |
+| `cli-output-error` | Cannot write output file |
+
+---
+
+### Ontology Validation Rules
+
+The ontology loader enforces 13 cross-element semantic rules beyond per-field shape validation:
+
+1. Entity names are unique within the ontology.
+2. Relationship names are unique within the ontology.
+3. Entity and relationship names are disjoint — no name can be used by both.
+4. Property names are unique within their parent entity or relationship.
+5. `extends` must reference a declared same-kind element.
+6. No cycles in `extends` chains.
+7. Redeclaring an inherited property (by name) is an error.
+8. Redeclaring inherited keys is an error.
+9. Every key column must reference a declared property (including inherited ones).
+10. Alternate keys must be non-empty, have no duplicate columns, and not duplicate another key.
+11. On entities: `primary` is required (directly or inherited), `additional` is forbidden.
+12. On relationships: `primary` and `additional` are mutually exclusive.
+13. Relationship endpoints must reference declared entities, and child relationships must covariantly narrow parent endpoints.
+
+### Binding Validation Rules
+
+The binding loader enforces these semantic rules against the paired ontology:
+
+1. The binding's `ontology` field must match the ontology's `ontology` field.
+2. Entity and relationship binding names are unique within the binding and across kinds.
+3. Every bound name must reference a declared element in the ontology.
+4. Total property coverage within each bound element: all non-derived properties bound, no derived properties bound, no duplicates.
+5. Relationship `from_columns` arity matches the source entity's primary key arity.
+6. Relationship `to_columns` arity matches the target entity's primary key arity.
+7. Both endpoints of a bound relationship must have at least one bound descendant entity in the binding (no dangling edges).
+
+---
+
+### Compilation Details
+
+#### Pipeline
+
+The compiler (`compile_graph`) runs in two stages:
+
+**Stage 1 — Resolve.** Cross-references the ontology and binding to produce a `ResolvedGraph`:
+- Rejects `extends` (v0 does not lower inheritance).
+- Indexes ontology elements and bindings by name.
+- Resolves node tables: entity name becomes the alias, binding supplies source and column mappings.
+- Resolves edge tables: wires endpoints to node-table aliases and key columns.
+- Substitutes derived expressions with physical column names (recursive, with cycle detection).
+- Sorts node and edge tables alphabetically by alias for deterministic output.
+
+**Stage 2 — Emit.** Walks the `ResolvedGraph` and renders DDL text:
+- Properties are emitted in ontology declaration order (not sorted).
+- Property lists that fit within 80 columns render inline; longer lists wrap to one property per line.
+- Output is deterministic: same inputs always produce byte-identical DDL.
+
+#### Derived expression substitution
+
+The compiler replaces property names in `expr` with their bound column names. If a derived property references another derived property, the substitution is recursive, and cycles are detected:
+
+```
+expr: "first_name || ' ' || last_name"
+        ↓ first_name bound to given_name
+        ↓ last_name bound to family_name
+sql:  "given_name || ' ' || family_name"
+```
+
+Nested derived references are parenthesized: if property `A` has `expr: "B + 1"` and `B` has `expr: "C * 2"`, the result for A is `((bound_C * 2) + 1)`.
+
+#### Edge key resolution
+
+Every edge table gets a `KEY (...)` clause. Three mutually exclusive cases:
+
+| Ontology keys | DDL KEY columns |
+|--------------|-----------------|
+| `primary: [cols]` | Bound primary columns |
+| `additional: [cols]` | `from_columns` + `to_columns` + bound additional columns |
+| No keys | `from_columns` + `to_columns` |
+
+#### Property rendering in DDL
+
+| Case | Rendered as |
+|------|-------------|
+| Column matches logical name | `column_name` |
+| Column differs from logical name | `column_name AS logical_name` |
+| Derived property | `(expression) AS logical_name` |
+
+#### Output structure
+
+```sql
+CREATE PROPERTY GRAPH <name>
+  NODE TABLES (
+    <source> AS <entity_name>
+      KEY (<key_columns>)
+      LABEL <entity_name> PROPERTIES (<property_list>),
+    ...
+  )
+  EDGE TABLES (
+    <source> AS <relationship_name>
+      KEY (<key_columns>)
+      SOURCE KEY (<from_columns>) REFERENCES <from_entity> (<from_key_columns>)
+      DESTINATION KEY (<to_columns>) REFERENCES <to_entity> (<to_key_columns>)
+      LABEL <relationship_name> PROPERTIES (<property_list>),
+    ...
+  );
+```
+
+A BigQuery property graph is a logical overlay on existing tables — it does not copy or move data. Once created, the graph can be queried with GQL using `GRAPH_TABLE` or `MATCH` syntax.
