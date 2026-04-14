@@ -115,28 +115,33 @@ Derived properties do not appear in the binding — the compiler substitutes the
 
 #### Relationship keys
 
-Relationships have three options for uniqueness:
+Relationships have three options for keys:
 
-- **`primary`** — the edge has its own standalone identity (e.g. a `TRANSFER` keyed by `transaction_id`).
-- **`additional`** — the edge is unique within an endpoint pair (e.g. `HOLDS` keyed by `as_of`, meaning for a given account-security pair, no two holdings share the same `as_of` date).
-- **No keys** — multi-edges are allowed between the same pair of nodes. Omit the `keys` field entirely.
+- **`primary`** — the edge has its own standalone identity (e.g. a `TRANSFER` keyed by `transaction_id`). The DDL KEY uses the bound primary columns only.
+- **`additional`** — the edge is unique within an endpoint pair (e.g. `HOLDS` keyed by `as_of`, meaning for a given account-security pair, no two holdings share the same `as_of` date). The DDL KEY becomes `(from_columns, to_columns, additional_columns)`.
+- **No keys** — the DDL defaults to using the endpoint pair `(from_columns, to_columns)` as the KEY. This means each pair of endpoints can have at most one edge. If you actually need multiple edges between the same pair of nodes, declare `keys.additional` with a discriminator property.
 
 `primary` and `additional` are mutually exclusive.
 
 ```yaml
-# Standalone identity
+# Standalone identity — KEY is (transaction_id)
 - name: TRANSFER
   keys:
     primary: [transaction_id]
   from: Account
   to: Account
 
-# Endpoint-extended identity
+# Endpoint-extended — KEY is (from, to, as_of)
 - name: HOLDS
   keys:
     additional: [as_of]
   from: Account
   to: Security
+
+# No keys — KEY defaults to (from, to), one edge per endpoint pair
+- name: RELATED_TO
+  from: Party
+  to: Party
 ```
 
 #### Inheritance
@@ -589,6 +594,8 @@ Unknown keys at any level are rejected.
 
 All lists must be non-empty when present. Empty lists (e.g. `primary: []`) are rejected at parse time.
 
+When no keys are declared on a relationship, the compiled DDL defaults to using the endpoint columns (`from_columns + to_columns`) as the KEY, limiting each endpoint pair to one edge.
+
 ---
 
 ### Binding YAML Schema
@@ -807,11 +814,11 @@ Nested derived references are parenthesized: if property `A` has `expr: "B + 1"`
 
 Every edge table gets a `KEY (...)` clause. Three mutually exclusive cases:
 
-| Ontology keys | DDL KEY columns |
-|--------------|-----------------|
-| `primary: [cols]` | Bound primary columns |
-| `additional: [cols]` | `from_columns` + `to_columns` + bound additional columns |
-| No keys | `from_columns` + `to_columns` |
+| Ontology keys | DDL KEY columns | Effect |
+|--------------|-----------------|--------|
+| `primary: [cols]` | Bound primary columns | Edge has standalone identity |
+| `additional: [cols]` | `from_columns` + `to_columns` + bound additional columns | Multiple edges per endpoint pair, discriminated by additional columns |
+| No keys | `from_columns` + `to_columns` | One edge per endpoint pair (endpoint pair is the identity) |
 
 #### Property rendering in DDL
 
