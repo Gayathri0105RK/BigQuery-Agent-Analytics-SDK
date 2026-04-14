@@ -80,8 +80,8 @@ class PropertyBinding(BaseModel):
 
   model_config = ConfigDict(extra="forbid")
 
-  name: str
-  column: str
+  name: str = Field(min_length=1)
+  column: str = Field(min_length=1)
 
 
 class EntityBinding(BaseModel):
@@ -91,6 +91,14 @@ class EntityBinding(BaseModel):
   (``type = 'customer'``, etc.) build a view in the warehouse and bind
   to that view rather than extending this model with expressions.
 
+  Coverage is all-or-nothing per entity: deciding to include the entity
+  in a binding commits you to binding *every* one of its non-derived
+  properties (including inherited ones), no cherry-picking. If you want
+  to omit the entity from this target, leave it out of the parent
+  ``Binding`` entirely. Derived (``expr:``) properties are the mirror
+  image — they must *never* appear in a binding, since the compiler
+  substitutes their expression at DDL emission.
+
   The primary key is implicit: the ontology names the key properties,
   and the matching ``PropertyBinding`` entries here supply the columns.
   """
@@ -99,16 +107,21 @@ class EntityBinding(BaseModel):
 
   name: str
   source: str
-  # An empty list is accepted so this shape model stays ontology-free;
-  # whether an empty list is *correct* depends on how many non-derived
-  # properties the bound entity declares, which only the loader can
-  # answer. A strict non-empty check here would false-positive on
-  # entities that legitimately have no non-derived properties.
+  # Whether a ``properties: []`` list is *correct* depends on how many
+  # non-derived properties the entity declares — a question this shape
+  # model cannot answer. Accept any list length here and let the loader
+  # enforce all-or-nothing coverage once it has the ontology in hand.
   properties: list[PropertyBinding] = Field(default_factory=list)
 
 
 class RelationshipBinding(BaseModel):
   """Realizes one ontology relationship against a physical edge table.
+
+  Coverage rules match ``EntityBinding``: once a relationship appears
+  in a binding, every one of its non-derived properties must be bound
+  (no cherry-picking), and derived (``expr:``) properties must not
+  appear. To omit a relationship from a target, leave it out of the
+  parent ``Binding`` entirely.
 
   ``from_columns`` and ``to_columns`` are the columns in ``source`` that
   carry the source and target endpoint keys — a list because primary
@@ -135,18 +148,20 @@ class Binding(BaseModel):
   the logical ontology this binding realizes — not a path; the loader
   resolves it to an ontology file.
 
-  A binding may realize a *subset* of the referenced ontology: entities
-  and relationships that are absent here are simply not realized on
-  this target. Both ``entities`` and ``relationships`` default to empty
-  so that parse-only shape checks succeed on minimal stub files; a
-  binding that realizes nothing is semantically pointless but not
-  shape-invalid.
+  A binding may realize a *subset* of the referenced ontology at the
+  entity/relationship level — any element left out of ``entities`` or
+  ``relationships`` is simply absent from this target. Within each
+  element you choose to include, however, coverage is total: see
+  ``EntityBinding`` and ``RelationshipBinding``. Both list fields
+  default to empty so that parse-only shape checks succeed on minimal
+  stub files; a binding that realizes nothing is semantically
+  pointless but not shape-invalid.
   """
 
   model_config = ConfigDict(extra="forbid")
 
-  binding: str
-  ontology: str
+  binding: str = Field(min_length=1)
+  ontology: str = Field(min_length=1)
   target: BigQueryTarget
   entities: list[EntityBinding] = Field(default_factory=list)
   relationships: list[RelationshipBinding] = Field(default_factory=list)

@@ -19,6 +19,8 @@ backend-neutral ontology described in YAML, with entities, relationships,
 properties, keys, and single-parent inheritance.
 """
 
+from .binding_loader import load_binding
+from .binding_loader import load_binding_from_string
 from .binding_models import Backend
 from .binding_models import BigQueryTarget
 from .binding_models import Binding
@@ -49,6 +51,8 @@ __all__ = [
     "PropertyType",
     "Relationship",
     "RelationshipBinding",
+    "load_binding",
+    "load_binding_from_string",
     "load_ontology",
     "load_ontology_from_string",
 ]
