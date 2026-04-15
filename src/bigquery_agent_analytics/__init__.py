@@ -362,6 +362,7 @@ try:
   from .ontology_models import ExtractedProperty
   from .ontology_models import GraphSpec
   from .ontology_models import KeySpec
+  from .ontology_models import load_from_ontology_binding
   from .ontology_models import load_graph_spec
   from .ontology_models import load_graph_spec_from_string
   from .ontology_models import PropertySpec
@@ -377,6 +378,7 @@ try:
           "ExtractedProperty",
           "GraphSpec",
           "KeySpec",
+          "load_from_ontology_binding",
           "load_graph_spec",
           "load_graph_spec_from_string",
           "PropertySpec",
@@ -435,12 +437,16 @@ except ImportError as e:
 
 # Ontology Property Graph Compiler
 try:
+  from .ontology_property_graph import can_use_upstream_compiler
+  from .ontology_property_graph import compile_ddl_via_upstream
   from .ontology_property_graph import compile_property_graph_ddl
   from .ontology_property_graph import OntologyPropertyGraphCompiler
 
   __all__.extend(
       [
           "OntologyPropertyGraphCompiler",
+          "can_use_upstream_compiler",
+          "compile_ddl_via_upstream",
           "compile_property_graph_ddl",
       ]
   )
@@ -492,6 +498,8 @@ except ImportError as e:
 
 # V5: TTL Importer
 try:
+  from .ttl_importer import import_owl_to_graph_spec
+  from .ttl_importer import import_owl_to_ontology
   from .ttl_importer import ttl_import
   from .ttl_importer import ttl_resolve
   from .ttl_importer import TTLImportResult
@@ -499,6 +507,8 @@ try:
   __all__.extend(
       [
           "TTLImportResult",
+          "import_owl_to_graph_spec",
+          "import_owl_to_ontology",
           "ttl_import",
           "ttl_resolve",
       ]
@@ -517,6 +527,25 @@ try:
 except ImportError as e:
   logger.debug(
       "Could not import lineage detection: %s.",
+      e,
+  )
+
+# Runtime Spec Adapter (ontology package bridge)
+try:
+  from .runtime_spec import graph_spec_from_ontology_binding
+  from .runtime_spec import graph_spec_to_ontology_binding
+  from .runtime_spec import LineageEdgeConfig
+
+  __all__.extend(
+      [
+          "LineageEdgeConfig",
+          "graph_spec_from_ontology_binding",
+          "graph_spec_to_ontology_binding",
+      ]
+  )
+except ImportError as e:
+  logger.debug(
+      "Could not import runtime spec adapter: %s.",
       e,
   )
 
