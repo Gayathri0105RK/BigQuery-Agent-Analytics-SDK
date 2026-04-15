@@ -1169,3 +1169,11 @@ class TestUpstreamDDLBridge:
     spec = _demo_spec()
     with pytest.raises(ValueError, match="extends"):
       compile_ddl_via_upstream(spec, "p", "d")
+
+  def test_compile_via_upstream_rejects_lineage(self):
+    """Upstream compiler rejects lineage session column overrides."""
+    from bigquery_agent_analytics.ontology_property_graph import compile_ddl_via_upstream
+
+    spec = _make_lineage_spec()
+    with pytest.raises(ValueError, match="session column overrides"):
+      compile_ddl_via_upstream(spec, "p", "d")

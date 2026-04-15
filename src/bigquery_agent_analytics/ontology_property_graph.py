@@ -454,9 +454,30 @@ def compile_ddl_via_upstream(
 
   Raises:
       ValueError: If the spec uses ``extends`` (upstream v0 rejects
-          inheritance) or if the conversion fails.
+          inheritance), ``from_session_column`` / ``to_session_column``
+          (SDK lineage extension not supported upstream), or if the
+          conversion fails.
       ImportError: If the ``bigquery_ontology`` package is not available.
   """
+  if not can_use_upstream_compiler(spec):
+    reasons = []
+    if _spec_uses_extends(spec):
+      entities_with_extends = [e.name for e in spec.entities if e.extends]
+      reasons.append(f"entities use extends: {entities_with_extends}")
+    if _spec_uses_lineage_columns(spec):
+      rels_with_lineage = [
+          r.name
+          for r in spec.relationships
+          if r.binding.from_session_column is not None
+      ]
+      reasons.append(
+          f"relationships use session column overrides: " f"{rels_with_lineage}"
+      )
+    raise ValueError(
+        "Spec is not compatible with the upstream v0 compiler: "
+        + "; ".join(reasons)
+    )
+
   from bigquery_ontology import compile_graph
 
   from .runtime_spec import graph_spec_to_ontology_binding
