@@ -27,9 +27,9 @@ from .binding_models import Binding
 from .binding_models import EntityBinding
 from .binding_models import PropertyBinding
 from .binding_models import RelationshipBinding
-from .compiler import compile_graph
-from .loader import load_ontology
-from .loader import load_ontology_from_string
+from .graph_ddl_compiler import compile_graph
+from .ontology_loader import load_ontology
+from .ontology_loader import load_ontology_from_string
 from .ontology_models import Cardinality
 from .ontology_models import Entity
 from .ontology_models import Keys
@@ -37,6 +37,7 @@ from .ontology_models import Ontology
 from .ontology_models import Property
 from .ontology_models import PropertyType
 from .ontology_models import Relationship
+from .scaffold import scaffold
 
 __all__ = [
     "Backend",
@@ -57,4 +58,5 @@ __all__ = [
     "load_binding_from_string",
     "load_ontology",
     "load_ontology_from_string",
+    "scaffold",
 ]
