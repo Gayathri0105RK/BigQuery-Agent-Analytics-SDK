@@ -80,15 +80,17 @@ where_clause = "timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @time_h
 if agent_name:
     where_clause += " AND agent = @agent_name"
 
-# --- 6. Executive Summary ---
+# --- 6. Executive Summary (Resolved PR Consistency Issue) ---
 st.header("📊 Executive Summary")
+
 kpi_data = safe_query(f"""
+    WITH enriched AS ({ENRICHED_EVENTS_CTE})
     SELECT
         COUNT(DISTINCT session_id) as sessions,
         COUNT(DISTINCT trace_id) as traces,
         COUNTIF(event_type = 'LLM_REQUEST') as llm_calls,
-        SAFE_DIVIDE(COUNTIF(status = 'ERROR' OR error_message IS NOT NULL), COUNT(*)) as error_rate
-    FROM {{table_ref}} WHERE {where_clause}
+        SAFE_DIVIDE(COUNTIF(is_canonical_error = TRUE), COUNT(*)) as error_rate
+    FROM enriched
 """, params=global_params)
 
 if not kpi_data.empty:
@@ -96,9 +98,9 @@ if not kpi_data.empty:
     c1.metric("Sessions", kpi_data['sessions'][0])
     c2.metric("Traces", kpi_data['traces'][0])
     c3.metric("LLM Calls", kpi_data['llm_calls'][0])
+    # The rate now includes TOOL_ERROR and LLM_ERROR automatically
     c4.metric("Error Rate", f"{kpi_data['error_rate'][0]*100:.2f}%")
-
-st.divider()
+    
 
 # --- 7. Detailed Tabs ---
 tabs = st.tabs(["📈 Usage", "⚡ Performance", "🛡️ Reliability", "🖼️ Multimodal", "🤝 HITL", "🔍 Trace Explorer"])
