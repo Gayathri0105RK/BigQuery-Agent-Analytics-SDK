@@ -834,6 +834,7 @@ def _strip_markdown_fences(text: str) -> str:
   if not text.startswith("```"):
     return text
   import re
+
   text = re.sub(r"^```(?:json|sql)?\s*\n?", "", text)
   text = re.sub(r"\n?\s*```\s*$", "", text)
   return text.strip()
