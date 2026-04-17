@@ -61,7 +61,6 @@ from datetime import datetime
 from datetime import timezone
 import json
 import logging
-import re
 from typing import Any, Optional
 
 from pydantic import BaseModel
@@ -666,16 +665,8 @@ def parse_classifications(
         for m in config.metrics
     ]
 
-  # Strip markdown code fences (```json ... ```) that models often wrap
-  # around JSON output.
-  text = raw_json.strip()
-  if text.startswith("```"):
-    text = re.sub(r"^```[a-zA-Z]*\s*\n?", "", text)
-    text = re.sub(r"\n?\s*```\s*$", "", text)
-    text = text.strip()
-
   try:
-    parsed = json.loads(text)
+    parsed = json.loads(raw_json)
   except (json.JSONDecodeError, TypeError):
     return [
         CategoricalMetricResult(
