@@ -972,6 +972,26 @@ class BigQueryMemoryService(BaseMemoryService):
         project_id, dataset_id, table_id, client
     )
 
+    # Emit the vanilla-client WARNING exactly once at the service
+    # boundary — each child otherwise latches its own warning flag, so a
+    # single unlabeled client injected here would produce up to four
+    # separate warnings across the service's lifetime. Latch them all
+    # up front so only the service-level log fires.
+    if isinstance(client, bigquery.Client) and not isinstance(
+        client, LabeledBigQueryClient
+    ):
+      logger.warning(
+          "User-provided bigquery.Client is not a "
+          "LabeledBigQueryClient; SDK telemetry labels will not be "
+          "applied to jobs from this client. To opt in, construct "
+          "the client via bigquery_agent_analytics.make_bq_client() "
+          "or pass a LabeledBigQueryClient directly."
+      )
+      self._warned_unlabeled_client = True
+      self.session_memory._warned_unlabeled_client = True
+      self.episodic_memory._warned_unlabeled_client = True
+      self.profile_builder._warned_unlabeled_client = True
+
   @property
   def client(self) -> bigquery.Client:
     """Lazily initializes and returns the BigQuery client."""

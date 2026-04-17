@@ -167,3 +167,85 @@ class TestVanillaClientWarnOnce:
         if "SDK telemetry labels will not be applied" in r.message
     ]
     assert len(warnings) == 1
+
+
+class TestBigQueryMemoryServiceWarnOnceAcrossChildren:
+  """PR #27 review: `BigQueryMemoryService` copies the same vanilla
+  bigquery.Client into three child objects plus self, and public
+  methods dispatch through the children — each with its own
+  `_warned_unlabeled_client` latch. Without coordination, the service
+  can emit up to four separate warnings over its lifetime for a single
+  vanilla-client injection. The service must emit exactly one warning
+  across all code paths for a given client."""
+
+  def _build_service_with_vanilla_client(self):
+    vanilla = bigquery.Client(project="p", credentials=AnonymousCredentials())
+    service = BigQueryMemoryService(
+        project_id="p", dataset_id="d", client=vanilla
+    )
+    return service, vanilla
+
+  def _count_label_warnings(self, caplog):
+    return len(
+        [
+            r
+            for r in caplog.records
+            if "SDK telemetry labels will not be applied" in r.message
+        ]
+    )
+
+  def test_warn_once_across_all_child_and_top_level_access(self, caplog):
+    service, _ = self._build_service_with_vanilla_client()
+
+    with caplog.at_level(logging.WARNING):
+      # Top-level access.
+      _ = service.client
+      # Every child property access the public API exercises.
+      _ = service.session_memory.client
+      _ = service.episodic_memory.client
+      _ = service.profile_builder.client
+      # And repeated accesses on each to prove the latches hold.
+      _ = service.episodic_memory.client
+      _ = service.profile_builder.client
+
+    assert self._count_label_warnings(caplog) == 1
+
+  def test_warn_once_across_public_method_dispatch(self, caplog):
+    # Real usage: the caller invokes `search_memory`, `get_user_profile`,
+    # and `get_session_context`, each of which routes through a different
+    # child's `.client`. A vanilla injection must still yield one WARNING
+    # total, not three.
+    from unittest.mock import AsyncMock
+    from unittest.mock import patch
+
+    service, _ = self._build_service_with_vanilla_client()
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(
+            service.episodic_memory,
+            "retrieve_similar_episodes",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            service.profile_builder,
+            "build_profile",
+            new=AsyncMock(return_value=UserProfile(user_id="u1")),
+        ),
+        patch.object(
+            service.session_memory,
+            "get_recent_context",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+      _run(service.search_memory(app_name="app", user_id="u1", query="q"))
+      _run(service.get_user_profile(user_id="u1"))
+      _run(service.get_session_context(user_id="u1", current_session_id="s1"))
+      # AsyncMocks skip the child .client property entirely, so force
+      # the paths that would touch .client directly for this assertion.
+      _ = service.client
+      _ = service.session_memory.client
+      _ = service.episodic_memory.client
+      _ = service.profile_builder.client
+
+    assert self._count_label_warnings(caplog) == 1
