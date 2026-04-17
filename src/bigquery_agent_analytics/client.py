@@ -53,6 +53,9 @@ from typing import Any, Optional
 
 from google.cloud import bigquery
 
+from ._telemetry import LabeledBigQueryClient
+from ._telemetry import make_bq_client
+from ._telemetry import with_sdk_labels
 from .categorical_evaluator import build_ai_classify_query
 from .categorical_evaluator import build_ai_generate_query
 from .categorical_evaluator import build_categorical_prompt
@@ -341,12 +344,32 @@ class Client:
 
   @property
   def bq_client(self) -> bigquery.Client:
-    """Lazily initializes the BigQuery client."""
+    """Lazily initializes the BigQuery client.
+
+    Returns a ``LabeledBigQueryClient`` so every job the SDK submits
+    carries the default SDK labels (``sdk``, ``sdk_version``,
+    ``sdk_surface``). If the caller passed a vanilla ``bigquery.Client``
+    at construction time, it is transparently re-wrapped so labels
+    still apply. Non-``bigquery.Client`` objects (e.g. ``MagicMock`` in
+    tests) are honored as-is.
+    """
     if self._bq_client is None:
-      kwargs: dict = {"project": self.project_id}
-      if self.location:
-        kwargs["location"] = self.location
-      self._bq_client = bigquery.Client(**kwargs)
+      self._bq_client = make_bq_client(
+          self.project_id, location=self.location, sdk_surface="python"
+      )
+    elif isinstance(self._bq_client, bigquery.Client) and not isinstance(
+        self._bq_client, LabeledBigQueryClient
+    ):
+      logger.debug(
+          "Wrapping user-provided bigquery.Client in "
+          "LabeledBigQueryClient so SDK labels apply to every job."
+      )
+      self._bq_client = LabeledBigQueryClient(
+          project=self._bq_client.project,
+          credentials=self._bq_client._credentials,
+          location=self._bq_client.location,
+          sdk_surface="python",
+      )
     return self._bq_client
 
   # -------------------------------------------------------------- #
@@ -369,6 +392,7 @@ class Client:
               ),
           ]
       )
+      job_config = with_sdk_labels(job_config, feature="trace-read")
       results = list(
           self.bq_client.query(query, job_config=job_config).result()
       )
@@ -404,7 +428,10 @@ class Client:
           project=self.project_id,
           dataset=self.dataset_id,
       )
-      rows = list(self.bq_client.query(query).result())
+      job_config = with_sdk_labels(
+          bigquery.QueryJobConfig(), feature="trace-read"
+      )
+      rows = list(self.bq_client.query(query, job_config=job_config).result())
       existing = {r.get("table_name") for r in rows}
 
       for candidate in _AUTO_DETECT_TABLES:
@@ -476,6 +503,7 @@ class Client:
               ),
           ]
       )
+      job_config = with_sdk_labels(job_config, feature="trace-read")
       rows = list(
           self.bq_client.query(schema_query, job_config=job_config).result()
       )
@@ -508,6 +536,7 @@ class Client:
       ev_config = bigquery.QueryJobConfig(
           query_parameters=params,
       )
+      ev_config = with_sdk_labels(ev_config, feature="trace-read")
       ev_rows = list(
           self.bq_client.query(ev_query, job_config=ev_config).result()
       )
@@ -596,6 +625,7 @@ class Client:
     job_config = bigquery.QueryJobConfig(
         query_parameters=params,
     )
+    job_config = with_sdk_labels(job_config, feature="trace-read")
 
     rows = list(self.bq_client.query(query, job_config=job_config).result())
 
@@ -677,6 +707,7 @@ class Client:
             ),
         ]
     )
+    job_config = with_sdk_labels(job_config, feature="trace-read")
 
     results = list(self.bq_client.query(query, job_config=job_config).result())
 
@@ -740,6 +771,7 @@ class Client:
             ),
         ]
     )
+    job_config = with_sdk_labels(job_config, feature="trace-read")
 
     results = list(self.bq_client.query(query, job_config=job_config).result())
 
@@ -798,6 +830,7 @@ class Client:
     job_config = bigquery.QueryJobConfig(
         query_parameters=params,
     )
+    job_config = with_sdk_labels(job_config, feature="trace-read")
 
     results = list(self.bq_client.query(query, job_config=job_config).result())
     return _build_traces_from_rows(results)
@@ -877,6 +910,7 @@ class Client:
     job_config = bigquery.QueryJobConfig(
         query_parameters=params,
     )
+    job_config = with_sdk_labels(job_config, feature="eval-code")
 
     results = list(self.bq_client.query(query, job_config=job_config).result())
 
@@ -1012,6 +1046,9 @@ class Client:
     job_config = bq.QueryJobConfig(
         query_parameters=judge_params,
     )
+    job_config = with_sdk_labels(
+        job_config, feature="eval-llm-judge", ai_function="ai-generate"
+    )
 
     results = list(self.bq_client.query(query, job_config=job_config).result())
 
@@ -1076,6 +1113,9 @@ class Client:
     job_config = bq.QueryJobConfig(
         query_parameters=judge_params,
     )
+    job_config = with_sdk_labels(
+        job_config, feature="eval-llm-judge", ai_function="ml-generate-text"
+    )
 
     results = list(self.bq_client.query(query, job_config=job_config).result())
 
@@ -1133,7 +1173,10 @@ class Client:
         table=table,
         where=where,
     )
-    job_config = bigquery.QueryJobConfig(query_parameters=params)
+    job_config = with_sdk_labels(
+        bigquery.QueryJobConfig(query_parameters=params),
+        feature="eval-llm-judge",
+    )
     results = list(self.bq_client.query(query, job_config=job_config).result())
     traces = _build_traces_from_rows(results)
 
@@ -1334,6 +1377,11 @@ class Client:
     job_config = bigquery.QueryJobConfig(
         query_parameters=list(params),
     )
+    job_config = with_sdk_labels(
+        job_config,
+        feature="eval-categorical",
+        ai_function="ai-classify",
+    )
 
     results = list(self.bq_client.query(query, job_config=job_config).result())
 
@@ -1379,6 +1427,11 @@ class Client:
     job_config = bigquery.QueryJobConfig(
         query_parameters=query_params,
     )
+    job_config = with_sdk_labels(
+        job_config,
+        feature="eval-categorical",
+        ai_function="ai-generate",
+    )
 
     results = list(self.bq_client.query(query, job_config=job_config).result())
 
@@ -1409,7 +1462,10 @@ class Client:
         table=table,
         where=where,
     )
-    job_config = bigquery.QueryJobConfig(query_parameters=list(params))
+    job_config = with_sdk_labels(
+        bigquery.QueryJobConfig(query_parameters=list(params)),
+        feature="eval-categorical",
+    )
     rows = list(self.bq_client.query(query, job_config=job_config).result())
 
     transcripts = {}
@@ -1447,7 +1503,10 @@ class Client:
           dataset=self.dataset_id,
           results_table=results_table,
       )
-      self.bq_client.query(ddl).result()
+      ddl_config = with_sdk_labels(
+          bigquery.QueryJobConfig(), feature="eval-categorical"
+      )
+      self.bq_client.query(ddl, job_config=ddl_config).result()
 
       rows = flatten_results_to_rows(report, config, endpoint)
       table_ref = f"{self.project_id}.{self.dataset_id}.{results_table}"
@@ -1697,6 +1756,10 @@ class Client:
     job_config = bq.QueryJobConfig(
         query_parameters=extra_params,
     )
+    # Apply labels BEFORE executor dispatch so they materialize on the
+    # QueryJobConfig in the caller's thread — contextvars do not
+    # propagate across run_in_executor's thread boundary.
+    job_config = with_sdk_labels(job_config, feature="insights")
 
     job = await loop.run_in_executor(
         None,
@@ -1802,6 +1865,9 @@ class Client:
             ),
         ],
     )
+    job_config = with_sdk_labels(
+        job_config, feature="insights", ai_function="ai-generate"
+    )
 
     job = await loop.run_in_executor(
         None,
@@ -1851,6 +1917,9 @@ class Client:
             ),
         ],
     )
+    job_config = with_sdk_labels(
+        job_config, feature="insights", ai_function="ml-generate-text"
+    )
 
     job = await loop.run_in_executor(
         None,
@@ -1893,6 +1962,7 @@ class Client:
             ),
         ],
     )
+    job_config = with_sdk_labels(job_config, feature="insights")
 
     job = await loop.run_in_executor(
         None,
