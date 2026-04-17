@@ -1396,16 +1396,18 @@ class Client:
       r = dict(row)
       sid = r.get("session_id", "unknown")
       parsed = parse_categorical_row(sid, r, config)
-      if r.get("classifications") is None and r.get("transcript"):
+      has_parse_error = any(m.parse_error for m in parsed.metrics)
+      if has_parse_error and r.get("transcript"):
         null_sessions[sid] = r.get("transcript", "")
       session_results.append(parsed)
 
     retry_meta = {}
     if null_sessions:
       logger.warning(
-          "AI.GENERATE returned NULL for %d sessions, "
-          "retrying via Gemini API",
+          "AI.GENERATE returned NULL/unparseable for %d session(s), "
+          "retrying via Gemini API: %s",
           len(null_sessions),
+          ", ".join(null_sessions.keys()),
       )
       retried = self._retry_null_sessions(
           null_sessions,
