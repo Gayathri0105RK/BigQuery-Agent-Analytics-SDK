@@ -310,6 +310,12 @@ class Client:
           ``ML.GENERATE_TEXT`` instead.
       connection_id: Optional BigQuery connection resource ID
           for AI.GENERATE.
+      sdk_surface: Label value stamped on the ``sdk_surface``
+          dimension of every job this Client dispatches. Defaults to
+          ``"python"``. The CLI sets ``"cli"`` and the deployed
+          remote-function runtime sets ``"remote-function"``. Lets
+          operators attribute spend and usage back to the entry-point
+          surface in ``INFORMATION_SCHEMA.JOBS_BY_PROJECT``.
   """
 
   def __init__(
@@ -323,6 +329,7 @@ class Client:
       bq_client: Optional[bigquery.Client] = None,
       endpoint: Optional[str] = None,
       connection_id: Optional[str] = None,
+      sdk_surface: str = "python",
   ) -> None:
     self.project_id = project_id
     self.dataset_id = dataset_id
@@ -330,6 +337,7 @@ class Client:
     self.gcs_bucket_name = gcs_bucket_name
     self._bq_client = bq_client
     self._warned_unlabeled_client = False
+    self._sdk_surface = sdk_surface
     self.endpoint = endpoint or DEFAULT_ENDPOINT
     self.connection_id = connection_id
 
@@ -369,7 +377,9 @@ class Client:
     """
     if self._bq_client is None:
       self._bq_client = make_bq_client(
-          self.project_id, location=self.location, sdk_surface="python"
+          self.project_id,
+          location=self.location,
+          sdk_surface=self._sdk_surface,
       )
     elif isinstance(self._bq_client, bigquery.Client) and not isinstance(
         self._bq_client, LabeledBigQueryClient
