@@ -53,10 +53,11 @@ from google.cloud import bigquery
 from pydantic import BaseModel
 from pydantic import Field
 
+from bigquery_agent_analytics.evaluators import strip_markdown_fences
+
 from ._telemetry import LabeledBigQueryClient
 from ._telemetry import make_bq_client
 from ._telemetry import with_sdk_labels
-from bigquery_agent_analytics.evaluators import strip_markdown_fences
 
 logger = logging.getLogger("bigquery_agent_analytics." + __name__)
 
