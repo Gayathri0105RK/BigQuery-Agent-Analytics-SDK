@@ -63,6 +63,8 @@ You open BigQuery. There are the rows. `USER_MESSAGE_RECEIVED`, `AGENT_STARTING`
 
 Fine. One line:
 
+<!-- Gist embed candidate: client setup + one-line render -->
+
 ```python
 from bigquery_agent_analytics import Client
 
@@ -121,13 +123,15 @@ Running this in a terminal? `trace.render(color=True)` wraps error markers in re
 
 One bug is interesting. Twenty Priya-like bugs is a pattern. The SDK lets you pivot from single-trace debugging to fleet-level triage in one step:
 
+<!-- Gist embed candidate: fleet-level ambiguity filter -->
+
 ```python
 from bigquery_agent_analytics import TraceFilter
 
 traces = client.list_traces(
-    filter_criteria=TraceFilter(
+    filter_criteria=TraceFilter.from_cli_args(
         last="24h",
-        agent="calendar_assistant",
+        agent_id="calendar_assistant",
     )
 )
 
@@ -154,6 +158,8 @@ The natural follow-up — turning this filter into an automated eval check that 
 
 One thing worth knowing: every query the SDK runs is labeled with the SDK version and the call site. That means you can point `INFORMATION_SCHEMA` at your jobs table and see exactly what the SDK is doing on your behalf, and what it's costing you:
 
+<!-- Gist embed candidate: INFORMATION_SCHEMA cost-per-call-site query -->
+
 ```sql
 SELECT
   labels.value AS sdk_call_site,
@@ -176,9 +182,12 @@ That's the kind of transparency you want from a library sitting between your age
 
 Three things to try right now:
 
-1. **[Install the plugin](https://github.com/GoogleCloudPlatform/adk-python).** If you have an ADK agent running, the plugin is a 5-minute wire-up and it starts populating `agent_events` immediately.
+1. **[Install the plugin (5-minute quickstart)](TBD: direct URL to the BQ Agent Analytics plugin quickstart page — NOT the adk-python repo root).** If you have an ADK agent running, the plugin is a 5-minute wire-up and it starts populating `agent_events` immediately.
 2. **Run `client.get_session_trace(id).render()`** on the ugliest production trace you have. Compare the time it takes to understand the failure to the time it would have taken in SQL.
 3. **[Star the SDK repo](https://github.com/GoogleCloudPlatform/BigQuery-Agent-Analytics-SDK)** if this made your afternoon easier.
+
+<!-- CTA URL resolution: the plugin quickstart page is the primary conversion target per issue #53. Do NOT fall back to the adk-python repo root — a reader clicking through to a full monorepo README loses momentum. Resolve this URL before publication; see "Open items before publish" below. -->
+
 
 Install the plugin today, see your first DAG in 10 minutes. Next post covers the same SDK, but for a different job: turning ad-hoc evals into a CI gate. The short version: your `agent_events` table is also a test suite.
 
@@ -205,3 +214,5 @@ Install the plugin today, see your first DAG in 10 minutes. Next post covers the
 3. Publication target confirmed (Google Cloud Community vs personal with co-promotion).
 4. Internal review by Google Cloud DevRel.
 5. Confirm the Priya narrative — do we use real trace data (dogfooded Calendar-Assistant in a sandbox project) or a composed narrative that reads real?
+6. **Resolve the primary-CTA URL** — replace the `TBD:` marker in section 7 with the exact plugin quickstart page. The top-level `adk-python` repo root is explicitly not acceptable per issue #53's conversion-goal framing.
+7. **Pull inline code blocks into Gists before publication** — three blocks are flagged inline as `<!-- Gist embed candidate: ... -->`. Create Gists in the SDK owner's account (so the "Open in GitHub" link doubles as an SDK backlink), replace the inline blocks with Medium's Gist embed widget.
