@@ -1,8 +1,23 @@
+<!--
+=========================================================================
+EDITORIAL NOTES — NOT PUBLISHABLE. Remove this block before paste to Medium.
+=========================================================================
+
+Status: Draft for internal review (issue #53).
+Target publication: Google Cloud Community / The Generator.
+Target length: 1,400-1,800 words.
+Screenshots and opening image TBD.
+Section 6 depends on query-labeling work tracked separately; can ship
+without it by removing that section.
+
+See the "EDITORIAL NOTES — NOT PUBLISHABLE" section at the bottom of the
+file for publication notes, Gist-embed checklist, and open items.
+=========================================================================
+-->
+
 # Your BigQuery Agent Analytics table is a graph. Here's how to see it.
 
 *A 10-minute tour of turning raw `agent_events` rows into readable traces with the BigQuery Agent Analytics SDK.*
-
-> **Status:** Draft for internal review (issue #53). Target publication: Google Cloud Community / *The Generator*. Target length: 1,400–1,800 words. Screenshots and opening image TBD. Section 6 depends on query-labeling work tracked separately; can ship without it by removing that section.
 
 ---
 
@@ -30,14 +45,15 @@ Before the SDK, you had two options: write SQL CTEs that join events by `span_id
 pip install bigquery-agent-analytics
 ```
 
-Export the four environment variables the SDK needs:
+Point it at your project:
 
 ```bash
 export PROJECT_ID=your-project
 export DATASET_ID=your_dataset
-export TABLE_ID=agent_events
 export DATASET_LOCATION=us-central1
 ```
+
+That's it. The SDK defaults `TABLE_ID` to `agent_events`, which is where the ADK plugin writes. Override it only if you renamed the table.
 
 Verify the connection:
 
@@ -99,7 +115,9 @@ Trace: d4f2-a1b3-book-priya | Session: sess-041 | 4382ms
       └─ [✓] AGENT_COMPLETED [calendar_assistant] - Done! 1:1 with Priya P. booked for Tuesday at 2pm.
 ```
 
-There it is. Read the third-from-top tool result: *"3 matches: Priya P., Priya S., Priya V."* The agent got three candidates back, then picked one without asking the user which Priya they meant. The book_meeting tool succeeded because the agent gave it a valid `contact_id`. Nothing errored. The bug is the decision, not the failure.
+There it is. Read the third-from-top tool result: *"3 matches: Priya P., Priya S., Priya V."* The agent got three candidates back, then picked one without asking the user which Priya they meant. The book_meeting tool succeeded because the agent gave it a valid `contact_id`. Nothing errored.
+
+> **The bug is the decision, not the failure.**
 
 You can't see that in rows. You can see it in the tree in two seconds.
 
@@ -121,7 +139,9 @@ Running this in a terminal? `trace.render(color=True)` wraps error markers in re
 
 ## 5. Going deeper — finding every Priya bug
 
-One bug is interesting. Twenty Priya-like bugs is a pattern. The SDK lets you pivot from single-trace debugging to fleet-level triage in one step:
+> **One bug is interesting. Twenty Priya-like bugs is a pattern.**
+
+The SDK lets you pivot from single-trace debugging to fleet-level triage in one step:
 
 <!-- Gist embed candidate: fleet-level ambiguity filter -->
 
@@ -194,6 +214,14 @@ Install the plugin today, see your first DAG in 10 minutes. Next post covers the
 ---
 
 *[CLOSING IMAGE: a stylized graphic of the full tree render — not a stock photo]*
+
+<!--
+=========================================================================
+EDITORIAL NOTES — NOT PUBLISHABLE.
+Everything below this line is for in-repo review and pre-publish prep.
+Do NOT paste the rest of this file into Medium.
+=========================================================================
+-->
 
 ---
 
