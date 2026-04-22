@@ -294,6 +294,57 @@ class TestSpan:
     )
     assert span.summary == "You are a helpful assistant"
 
+  def test_summary_unwraps_text_single_quoted(self):
+    """`text: 'hello'` wrapper should be stripped from response."""
+    span = Span(
+        event_type="LLM_RESPONSE",
+        agent="agent",
+        timestamp=datetime.now(timezone.utc),
+        content={"response": "text: 'hello world'"},
+    )
+    assert span.summary == "hello world"
+
+  def test_summary_unwraps_text_double_quoted(self):
+    """`text: \"hello\"` wrapper should be stripped too."""
+    span = Span(
+        event_type="LLM_RESPONSE",
+        agent="agent",
+        timestamp=datetime.now(timezone.utc),
+        content={"response": 'text: "hello world"'},
+    )
+    assert span.summary == "hello world"
+
+  def test_summary_unwraps_truncated_text_field(self):
+    """Truncated `text: 'abc...` (no closing quote) strips opening quote only."""
+    span = Span(
+        event_type="LLM_RESPONSE",
+        agent="agent",
+        timestamp=datetime.now(timezone.utc),
+        content={"response": "text: 'I found three Priyas"},
+    )
+    assert span.summary == "I found three Priyas"
+
+  def test_summary_leaves_plain_text_alone(self):
+    """A response without the wrapper must be returned unchanged."""
+    span = Span(
+        event_type="LLM_RESPONSE",
+        agent="agent",
+        timestamp=datetime.now(timezone.utc),
+        content={"response": "Booking confirmed for Priya Patel."},
+    )
+    assert span.summary == "Booking confirmed for Priya Patel."
+
+  def test_summary_leaves_non_wrapper_text_prefix_alone(self):
+    """`text:` without a following space-quoted value is not our wrapper."""
+    span = Span(
+        event_type="LLM_RESPONSE",
+        agent="agent",
+        timestamp=datetime.now(timezone.utc),
+        content={"response": "text:the-tool-id-is-x"},
+    )
+    # No leading `text: ` (with space), so the unwrapper leaves it alone.
+    assert span.summary == "text:the-tool-id-is-x"
+
 
 class TestTrace:
   """Tests for Trace class."""
