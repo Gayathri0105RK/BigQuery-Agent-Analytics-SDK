@@ -848,9 +848,9 @@ class Trace:
         if isinstance(c, dict):
           result = c.get("response")
           if result:
-            return result
+            return _unwrap_text_field(result) if isinstance(result, str) else result
         elif c:
-          return str(c)
+          return _unwrap_text_field(str(c))
 
     for span in reversed(self.spans):
       if span.event_type == "AGENT_COMPLETED":
@@ -858,9 +858,9 @@ class Trace:
         if isinstance(c, dict):
           result = c.get("response") or c.get("text_summary")
           if result:
-            return result
+            return _unwrap_text_field(result) if isinstance(result, str) else result
         elif c:
-          return str(c)
+          return _unwrap_text_field(str(c))
     return None
 
   @property
