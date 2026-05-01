@@ -144,7 +144,7 @@ The agent uses its tools and gives direct, grounded answers. No more "contact HR
 Ten out of ten sessions scored as helpful and grounded — in a single cycle.
 
 And now the operational comparison — the same deterministic metrics we captured as a baseline in Step 3, run on the V2 sessions and shown side by side.
-Latency stayed flat or improved — the V2 prompt routes to tools directly instead of deliberating. Token usage is comparable. 
+Latency consistently drops with V2 — the V1 agent spends time deliberating before refusing, while V2 routes to tools immediately and responds. Token usage increases because V2 calls tools for every question instead of refusing some, but stays well within budget.
 Turn count unchanged. The improved prompt didn't trade quality for cost.
 
 
@@ -184,8 +184,8 @@ To reset everything back to V1 and start over:
 ./reset.sh
 ```
 
-This reverts the prompt in the Vertex AI Prompt Registry to V1, restores the original three golden eval cases,
-and clears reports. 
+This reverts the prompt in the Vertex AI Prompt Registry to V1 and restores the original three golden eval cases.
+Previous run reports (under `reports/run_*/`) are preserved.
 
 There are multiple options of how to run the flow:
 ```shell
@@ -197,19 +197,20 @@ Options:
   --agent-config F   Path to agent's config.json
                      (default: config.json)
   --cycles N         Run N improvement cycles (default: 1)
-  --no-auto          Always run all N cycles even if 100%
-                     meaningful (default: stop early)
+  --auto             Enable auto-cycling: run up to N cycles,
+                     stop early when quality meets threshold
   --eval-only        Only run evaluation (Steps 1-3), skip improvement
   --app-name X       Override agent app name for BQ filtering
   --traffic-count N  Number of synthetic questions per cycle (default: 10)
+  --threshold N      Override quality_threshold (0-100, default: from config)
   -h, --help         Show this help message
 ```
 
 You can run again with multiple cycles to see iterative refinement:
 ```shell
-./run_cycle.sh --cycles 3
+./run_cycle.sh --auto --cycles 3
 ```
-By default, the cycle stops early once all synthetic traffic scores 100% meaningful. Each cycle generates fresh traffic, evaluates, improves, and measures. The golden eval set grows with each cycle as new edge cases are discovered.
+By default, the script runs a single cycle and stops. The `--auto` flag enables auto-cycling, which runs up to N cycles and stops early once quality meets `quality_threshold` from `config.json` (default: 0.95 = 95%). The threshold is set below 100% because LLM output is non-deterministic -- at N=100, ~1% variance is noise, not a systematic gap worth another optimizer cycle. Each cycle generates fresh traffic, evaluates, improves, and measures. The golden eval set grows with each cycle as new edge cases are discovered.
 
 ---
 

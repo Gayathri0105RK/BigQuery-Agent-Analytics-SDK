@@ -26,9 +26,9 @@
 #   Step 5  Measure improvement         (fresh traffic + LLM judge)
 #
 # Usage:
-#   ./run_cycle.sh                                          # Demo agent
+#   ./run_cycle.sh                                          # Single cycle (default)
+#   ./run_cycle.sh --auto --cycles 3                        # Auto-cycle up to 3
 #   ./run_cycle.sh --agent-config /path/to/config.json      # Any agent
-#   ./run_cycle.sh --cycles 3                               # 3 cycles
 #   ./run_cycle.sh --eval-only                              # Steps 1-3 only
 # ============================================================================
 
@@ -36,7 +36,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-REPORTS_DIR="$SCRIPT_DIR/reports"
+
+# Each run gets a unique timestamped directory under reports/
+RUN_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+REPORTS_DIR="$SCRIPT_DIR/reports/run_${RUN_TIMESTAMP}"
+mkdir -p "$REPORTS_DIR"
+
+# Tee all output: terminal gets colour, log file gets plain text.
+RUN_LOG="$REPORTS_DIR/run.log"
+exec > >(tee >(sed 's/\x1b\[[0-9;]*m//g' >> "$RUN_LOG")) 2>&1
 
 # Suppress noisy Python warnings (authlib, etc.) and INFO-level log spam.
 # Belt-and-suspenders: env var for child processes, -W flag for direct calls.
@@ -57,7 +65,7 @@ CYCLES=1
 EVAL_ONLY=false
 TRAFFIC_COUNT=10
 AGENT_CONFIG=""
-AUTO_CONTINUE=true
+AUTO_CONTINUE=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -83,8 +91,8 @@ while [[ $# -gt 0 ]]; do
       TRAFFIC_COUNT="$2"
       shift 2
       ;;
-    --no-auto)
-      AUTO_CONTINUE=false
+    --auto)
+      AUTO_CONTINUE=true
       shift
       ;;
     -h|--help)
@@ -94,8 +102,9 @@ while [[ $# -gt 0 ]]; do
       echo "  --agent-config F   Path to agent's config.json"
       echo "                     (default: config.json)"
       echo "  --cycles N         Run N improvement cycles (default: 1)"
-      echo "  --no-auto          Always run all N cycles even if 100%"
-      echo "                     meaningful (default: stop early)"
+      echo "  --auto             Enable auto-cycling: run up to N cycles,"
+      echo "                     stop early when quality meets threshold"
+      echo "                     (quality_threshold in config.json, default: 0.95)"
       echo "  --eval-only        Only run evaluation (Steps 1-3), skip improvement"
       echo "  --app-name X       Override agent app name for BQ filtering"
       echo "  --traffic-count N  Number of synthetic questions per cycle (default: 10)"
@@ -133,6 +142,7 @@ VERSION_VAR=$(jq -r '.version_variable // "CURRENT_VERSION"' "$AGENT_CONFIG")
 PROMPT_STORAGE=$(jq -r '.prompt_storage // "python_file"' "$AGENT_CONFIG")
 VERTEX_PROMPT_ID=$(jq -r '.vertex_prompt_id // ""' "$AGENT_CONFIG")
 VERTEX_LOCATION=$(jq -r '.vertex_location // "us-central1"' "$AGENT_CONFIG")
+QUALITY_THRESHOLD=$(jq -r '.quality_threshold // 0.95' "$AGENT_CONFIG")
 
 # Auto-setup: create Vertex AI prompt if not yet configured
 if [[ "$PROMPT_STORAGE" == "vertex" && -z "$VERTEX_PROMPT_ID" ]]; then
@@ -181,18 +191,36 @@ _show_prompt() {
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Timestamp prefix for log lines
+ts() { date "+%H:%M:%S"; }
+
+# ANSI formatting
+BOLD='\033[1m'
+DIM='\033[2m'
+CYAN='\033[36m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+RESET='\033[0m'
+
+# Print a prominent stage banner that stands out from [HH:MM:SS] log lines
+stage() {
+  echo ""
+  echo -e "${BOLD}${CYAN}  ▶ $*${RESET}"
+  echo ""
+}
+
 # Timer: call step_start before a step, step_end after.
 step_start() { STEP_START_TIME=$(date +%s); }
 step_end() {
   local elapsed=$(( $(date +%s) - STEP_START_TIME ))
   local label="${1:-Step}"
   echo ""
-  echo "  Done. ${label} completed in ${elapsed}s."
+  echo -e "  ${GREEN}✔ ${label} completed in ${elapsed}s.${RESET}"
 }
 
 separator() {
   echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo -e "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
 # ---------------------------------------------------------------------------
@@ -201,7 +229,7 @@ separator() {
 
 separator
 echo ""
-echo "  AGENT IMPROVEMENT CYCLE"
+echo -e "  ${BOLD}${CYAN}AGENT IMPROVEMENT CYCLE${RESET}"
 echo ""
 echo "  Cycles:     $CYCLES"
 echo "  Agent:      $APP_NAME"
@@ -211,6 +239,8 @@ if [[ "$PROMPT_STORAGE" == "vertex" && -n "$VERTEX_PROMPT_ID" ]]; then
   echo "  Prompt ID:  $VERTEX_PROMPT_ID"
 fi
 echo "  Traffic:    $TRAFFIC_COUNT questions per cycle"
+THRESHOLD_PCT=$(python3 -c "print(int(float('$QUALITY_THRESHOLD') * 100))")
+echo "  Threshold:  ${THRESHOLD_PCT}% meaningful (skip improvement if met)"
 CYCLE_START_TIME=$(date +%s)
 
 separator
@@ -230,13 +260,11 @@ echo ""
 # ---------------------------------------------------------------------------
 
 separator
-echo ""
-echo "  PRE-FLIGHT: Verifying golden eval set passes with current prompt"
-echo ""
+stage "PRE-FLIGHT: Verifying golden eval set passes with current prompt"
 step_start
 
 set +e
-$PY "$SCRIPT_DIR/eval/run_eval.py" --golden $AGENT_CONFIG_FLAG
+$PY "$SCRIPT_DIR/eval/run_eval.py" --golden $AGENT_CONFIG_FLAG --output-dir "$REPORTS_DIR"
 PREFLIGHT_EXIT=$?
 set -e
 step_end "Pre-flight check"
@@ -245,9 +273,9 @@ if [[ $PREFLIGHT_EXIT -ne 0 ]]; then
   FAILING_V=$(_read_version)
   echo ""
   echo "  ┌─────────────────────────────────────────────────────────────┐"
-  echo "  │  WARNING: Prompt V${FAILING_V} does not pass all golden eval cases.  │"
-  echo "  │  The baseline will be auto-improved before the cycle runs. │"
-  echo "  │  Use ./reset.sh to restore the original V1 prompt.        │"
+  echo "  │  WARNING: Prompt V${FAILING_V} does not pass all golden eval cases.    │"
+  echo "  │  The baseline will be auto-improved before the cycle runs.  │"
+  echo "  │  Use ./reset.sh to restore the original V1 prompt.          │"
   echo "  └─────────────────────────────────────────────────────────────┘"
   echo ""
 
@@ -270,6 +298,7 @@ with open('$EVAL_RESULTS') as f:
 
   $PY "$SCRIPT_DIR/run_improvement.py" \
     $AGENT_CONFIG_FLAG \
+    --output-dir "$REPORTS_DIR" \
     --from-eval-results "$EVAL_RESULTS"
 
   FIXED_V=$(_read_version)
@@ -283,8 +312,7 @@ for cycle in $(seq 1 "$CYCLES"); do
   TOTAL_STEPS=$( $EVAL_ONLY && echo 3 || echo 5 )
 
   separator
-  echo ""
-  echo "  CYCLE $cycle OF $CYCLES"
+  stage "CYCLE $cycle OF $CYCLES"
 
   # Get current prompt version
   CURRENT_V=$(_read_version)
@@ -293,9 +321,7 @@ for cycle in $(seq 1 "$CYCLES"); do
   # STEP 1: Generate synthetic traffic
   # =========================================================================
   separator
-  echo ""
-  echo "  STEP 1/$TOTAL_STEPS: GENERATE SYNTHETIC TRAFFIC"
-  echo ""
+  stage "STEP 1/$TOTAL_STEPS: GENERATE SYNTHETIC TRAFFIC"
   echo "  Goal:    Produce diverse user questions that differ from the golden eval set"
   echo "  Method:  Gemini generates $TRAFFIC_COUNT questions"
   echo ""
@@ -321,18 +347,28 @@ for cycle in $(seq 1 "$CYCLES"); do
   # STEP 2: Run synthetic traffic through the agent
   # =========================================================================
   separator
-  echo ""
-  echo "  STEP 2/$TOTAL_STEPS: RUN TRAFFIC THROUGH AGENT"
-  echo ""
+  stage "STEP 2/$TOTAL_STEPS: RUN TRAFFIC THROUGH AGENT"
   echo "  Goal:    Send questions to the agent, log every session to BigQuery"
   echo "  Prompt:  V${CURRENT_V} (current)"
   echo "  Logging: BigQuery via BigQueryAgentAnalyticsPlugin"
   echo ""
   step_start
 
+  # Timeouts/errors on individual cases are expected at high traffic
+  # volumes — don't let them abort the whole cycle.
+  set +e
   $PY "$SCRIPT_DIR/eval/run_eval.py" \
     $AGENT_CONFIG_FLAG \
-    --eval-cases "$TRAFFIC_JSON"
+    --eval-cases "$TRAFFIC_JSON" \
+    --output-dir "$REPORTS_DIR"
+  TRAFFIC_EXIT=$?
+  set -e
+
+  if [[ $TRAFFIC_EXIT -ne 0 ]]; then
+    echo ""
+    echo "  Note: $TRAFFIC_EXIT exit code from run_eval.py (some cases may have timed out)."
+    echo "  Continuing — timed-out cases are excluded from quality scoring."
+  fi
 
   # Save expected session IDs from this run for verification in Step 3.
   EXPECTED_IDS="$REPORTS_DIR/expected_session_ids_cycle_${cycle}.json"
@@ -344,9 +380,7 @@ for cycle in $(seq 1 "$CYCLES"); do
   # STEP 3: Evaluate session quality
   # =========================================================================
   separator
-  echo ""
-  echo "  STEP 3/$TOTAL_STEPS: EVALUATE SESSION QUALITY"
-  echo ""
+  stage "STEP 3/$TOTAL_STEPS: EVALUATE SESSION QUALITY"
   echo "  Goal:    Score each logged session from BigQuery"
   echo "  Method:  SDK quality_report.py reads sessions, LLM judges each one"
   echo "  Metrics: response_usefulness (meaningful/partial/unhelpful)"
@@ -358,20 +392,24 @@ for cycle in $(seq 1 "$CYCLES"); do
   rm -f "$REPORT_JSON"
 
   # Retry with backoff for BigQuery streaming buffer propagation.
-  echo "  Waiting 15s for BigQuery streaming buffer to flush..."
+  echo -e "  ${DIM}[$(ts)] Waiting 15s for BigQuery streaming buffer to flush...${RESET}"
   echo ""
 #  echo "  While we wait, here are the questions that were sent to the agent:"
 #  jq -r '.eval_cases[] | "    [\(.id)] \(.question)"' "$TRAFFIC_JSON" 2>/dev/null || true
 #  echo ""
+  # The LLM judge scores each session individually (2 LLM calls per
+  # session: usefulness + grounding). At N=100 this takes 3-5 minutes.
+  # No output is printed until scoring completes — this is normal.
   MAX_RETRIES=6
   for attempt in $(seq 1 "$MAX_RETRIES"); do
     sleep 15
-    echo "  Querying BigQuery and scoring sessions with LLM judge..."
+    echo -e "  ${DIM}[$(ts)] Scoring $ACTUAL_TRAFFIC_COUNT sessions with LLM judge (this may take a few minutes)...${RESET}"
     $PY "$REPO_ROOT/scripts/quality_report.py" \
       --app-name "$APP_NAME" \
       --output-json "$REPORT_JSON" \
-      --limit "$ACTUAL_TRAFFIC_COUNT" \
-      --time-period 24h || { rm -f "$REPORT_JSON"; true; }
+      --session-ids-file "$EXPECTED_IDS" \
+      --time-period 24h \
+      || { rm -f "$REPORT_JSON"; true; }
 
     if [[ -f "$REPORT_JSON" ]]; then
       SESSION_COUNT=$(jq -r '.summary.total_sessions // 0' "$REPORT_JSON" 2>/dev/null || echo "0")
@@ -410,7 +448,7 @@ print(len(missing))
 
   # Print quality summary
   echo ""
-  echo "  BASELINE SCORE (V${CURRENT_V}): $(jq -r '.summary.meaningful_rate' "$REPORT_JSON")% meaningful"
+  echo -e "  ${BOLD}BASELINE SCORE (V${CURRENT_V}): $(jq -r '.summary.meaningful_rate' "$REPORT_JSON")% meaningful${RESET}"
   echo "  ($(jq -r '.summary.meaningful' "$REPORT_JSON") meaningful, $(jq -r '.summary.partial' "$REPORT_JSON") partial, $(jq -r '.summary.unhelpful' "$REPORT_JSON") unhelpful out of $(jq -r '.summary.total_sessions' "$REPORT_JSON"))"
   echo ""
   echo "  Report saved to: $REPORT_JSON"
@@ -439,9 +477,7 @@ print(len(missing))
   fi
 
   separator
-  echo ""
-  echo "  STEP 4/$TOTAL_STEPS: IMPROVE PROMPT"
-  echo ""
+  stage "STEP 4/$TOTAL_STEPS: IMPROVE PROMPT"
   echo "  Goal:    Fix the prompt to address failed sessions"
   echo "  Method:  1. Extract failed cases into golden eval set"
   echo "           2. Generate ground truth via teacher agent"
@@ -456,6 +492,7 @@ print(len(missing))
   set +e
   $PY "$SCRIPT_DIR/run_improvement.py" \
     $AGENT_CONFIG_FLAG \
+    --output-dir "$REPORTS_DIR" \
     "$REPORT_JSON"
   IMPROVE_EXIT=$?
   set -e
@@ -475,13 +512,32 @@ print(len(missing))
 
   step_end "Prompt improvement"
 
+  # Skip measurement if no new version was produced — there's nothing to compare.
+  if [[ "$NEW_V" == "$CURRENT_V" ]]; then
+    echo ""
+    echo "  No new prompt version — skipping measurement step."
+    echo ""
+    echo "  Cycle $cycle complete."
+
+    # Auto-continue: use baseline score to decide
+    if [[ "$AUTO_CONTINUE" == "true" ]]; then
+      B_RATE=$(jq -r '.summary.meaningful_rate // 0' "$REPORT_JSON")
+      B_MEETS=$(python3 -c "print('yes' if float('$B_RATE') >= float('$QUALITY_THRESHOLD') * 100 else 'no')")
+      if [[ "$B_MEETS" == "yes" ]]; then
+        echo "  Quality ${B_RATE}% meets threshold (${THRESHOLD_PCT}%) — stopping auto-continue."
+        break
+      elif [[ $cycle -lt $CYCLES ]]; then
+        echo "  Quality ${B_RATE}% below threshold (${THRESHOLD_PCT}%) — continuing to cycle $((cycle + 1))..."
+      fi
+    fi
+    continue
+  fi
+
   # =========================================================================
   # STEP 5: Measure improvement with fresh traffic
   # =========================================================================
   separator
-  echo ""
-  echo "  STEP 5/$TOTAL_STEPS: MEASURE IMPROVEMENT"
-  echo ""
+  stage "STEP 5/$TOTAL_STEPS: MEASURE IMPROVEMENT"
   echo "  Goal:    Measure quality on fresh, unseen traffic via BigQuery"
   echo "  Method:  1. Generate fresh synthetic traffic (different from Step 1)"
   echo "           2. Run through agent with BigQuery logging"
@@ -498,9 +554,19 @@ print(len(missing))
   ACTUAL_FRESH_COUNT=$(jq '.eval_cases | length' "$FRESH_TRAFFIC")
 
   # 5c: Run fresh traffic through the improved agent (WITH BQ logging)
+  set +e
   $PY "$SCRIPT_DIR/eval/run_eval.py" \
     $AGENT_CONFIG_FLAG \
-    --eval-cases "$FRESH_TRAFFIC"
+    --eval-cases "$FRESH_TRAFFIC" \
+    --output-dir "$REPORTS_DIR"
+  FRESH_EXIT=$?
+  set -e
+
+  if [[ $FRESH_EXIT -ne 0 ]]; then
+    echo ""
+    echo "  Note: some fresh traffic cases may have timed out (exit $FRESH_EXIT)."
+    echo "  Continuing — timed-out cases are excluded from quality scoring."
+  fi
 
   # Save expected session IDs for Step 5 verification.
   FRESH_EXPECTED_IDS="$REPORTS_DIR/expected_session_ids_cycle_${cycle}_fresh.json"
@@ -513,21 +579,25 @@ print(len(missing))
   rm -f "$FRESH_REPORT"
 
   echo ""
-  echo "  Waiting 30s for BigQuery streaming buffer to flush..."
+  echo -e "  ${DIM}[$(ts)] Waiting 30s for BigQuery streaming buffer to flush...${RESET}"
   echo ""
   echo "  While we wait, here is the current golden eval set ($GOLDEN_AFTER cases):"
   jq -r '.eval_cases[] | "    [\(.id)] \(.question) (\(.category // "general"))"' "$EVAL_CASES_PATH" 2>/dev/null || true
   echo ""
 
+  # The LLM judge scores each session individually (2 LLM calls per
+  # session: usefulness + grounding). At N=100 this takes 3-5 minutes.
+  # No output is printed until scoring completes — this is normal.
   MAX_RETRIES=6
   for attempt in $(seq 1 "$MAX_RETRIES"); do
     sleep 30
-    echo "  Querying BigQuery and scoring sessions with LLM judge..."
+    echo -e "  ${DIM}[$(ts)] Scoring $ACTUAL_FRESH_COUNT fresh sessions with LLM judge (this may take a few minutes)...${RESET}"
     $PY "$REPO_ROOT/scripts/quality_report.py" \
       --app-name "$APP_NAME" \
       --output-json "$FRESH_REPORT" \
-      --limit "$ACTUAL_FRESH_COUNT" \
-      --time-period 24h || { rm -f "$FRESH_REPORT"; true; }
+      --session-ids-file "$FRESH_EXPECTED_IDS" \
+      --time-period 24h \
+      || { rm -f "$FRESH_REPORT"; true; }
 
     # Guard: ensure NO old session IDs from Step 3 appear in the
     # fresh report. A simple != check allows mixed old/new populations.
@@ -614,16 +684,16 @@ print(len(missing))
   echo ""
   echo "  Cycle $cycle complete."
 
-  # Auto-continue: stop early if 100% meaningful
+  # Auto-continue: stop early if quality meets threshold
   if [[ "$AUTO_CONTINUE" == "true" ]]; then
-    A_UNHELPFUL=$(jq -r '.summary.unhelpful // 0' "$FRESH_REPORT")
-    A_PARTIAL=$(jq -r '.summary.partial // 0' "$FRESH_REPORT")
-    if [[ "$A_UNHELPFUL" == "0" && "$A_PARTIAL" == "0" ]]; then
+    A_RATE=$(jq -r '.summary.meaningful_rate // 0' "$FRESH_REPORT")
+    A_MEETS=$(python3 -c "print('yes' if float('$A_RATE') >= float('$QUALITY_THRESHOLD') * 100 else 'no')")
+    if [[ "$A_MEETS" == "yes" ]]; then
       echo ""
-      echo "  All sessions meaningful — stopping auto-continue."
+      echo "  Quality ${A_RATE}% meets threshold (${THRESHOLD_PCT}%) — stopping auto-continue."
       break
     elif [[ $cycle -lt $CYCLES ]]; then
-      echo "  ${A_UNHELPFUL} unhelpful + ${A_PARTIAL} partial remain — continuing to cycle $((cycle + 1))..."
+      echo "  Quality ${A_RATE}% below threshold (${THRESHOLD_PCT}%) — continuing to cycle $((cycle + 1))..."
     fi
   fi
 done
@@ -645,7 +715,7 @@ echo ""
 
 separator
 echo ""
-echo "  DONE  ($CYCLES cycle(s), total wall time: ${TOTAL_MIN}m ${TOTAL_SEC}s)"
+echo -e "  ${BOLD}${GREEN}DONE${RESET}  ($CYCLES cycle(s), total wall time: ${TOTAL_MIN}m ${TOTAL_SEC}s)"
 echo ""
 echo "  Prompt version:   V${FINAL_V}"
 echo "  Golden eval set:  $FINAL_GOLDEN cases"

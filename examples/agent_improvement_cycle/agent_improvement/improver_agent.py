@@ -33,7 +33,8 @@ import re
 import warnings
 
 warnings.filterwarnings("ignore")
-logging.getLogger("google.genai").setLevel(logging.ERROR)
+
+logger = logging.getLogger(__name__)
 
 from agent_improvement.config import ImprovementConfig
 from agent_improvement.eval_runner import EvalRunner
@@ -189,6 +190,9 @@ async def _generate_ground_truth(
   same tools as the target agent, so its answers are grounded in
   real tool output.
 
+  Limits concurrency to avoid 429 rate-limit errors when many
+  sessions are processed.
+
   Returns a list of dicts with ``question``, ``bad_response``, and
   ``ground_truth`` keys.
   """
@@ -206,30 +210,40 @@ async def _generate_ground_truth(
     teacher_agent = config.agent_factory(teacher_prompt)
   runner = InMemoryRunner(agent=teacher_agent, app_name="teacher_agent")
 
-  async def _get_answer(session: dict) -> dict:
-    question = session.get("question", "")
-    sess = await runner.session_service.create_session(
-        app_name="teacher_agent", user_id="teacher"
-    )
-    msg = Content(role="user", parts=[Part(text=question)])
-    answer = ""
-    async for event in runner.run_async(
-        user_id="teacher", session_id=sess.id, new_message=msg
-    ):
-      if event.content and event.content.parts:
-        for part in event.content.parts:
-          if part.text:
-            answer += part.text
-    return {
-        "question": question,
-        "bad_response": session.get("response", "")[:500],
-        "ground_truth": answer,
-    }
+  # Limit concurrent LLM calls to avoid hitting Vertex AI rate limits.
+  semaphore = asyncio.Semaphore(5)
 
-  results = list(
-      await asyncio.gather(*[_get_answer(s) for s in failed_sessions])
-  )
-  return [r for r in results if r["ground_truth"].strip()]
+  async def _get_answer(session: dict) -> dict | None:
+    question = session.get("question", "")
+    async with semaphore:
+      try:
+        sess = await runner.session_service.create_session(
+            app_name="teacher_agent", user_id="teacher"
+        )
+        msg = Content(role="user", parts=[Part(text=question)])
+        answer = ""
+        async for event in runner.run_async(
+            user_id="teacher", session_id=sess.id, new_message=msg
+        ):
+          if event.content and event.content.parts:
+            for part in event.content.parts:
+              if part.text:
+                answer += part.text
+        return {
+            "question": question,
+            "bad_response": session.get("response", "")[:500],
+            "ground_truth": answer,
+        }
+      except Exception as e:
+        logging.warning(
+            "Teacher agent failed for question '%.80s': %s",
+            question,
+            e,
+        )
+        return None
+
+  results = await asyncio.gather(*[_get_answer(s) for s in failed_sessions])
+  return [r for r in results if r and r["ground_truth"].strip()]
 
 
 async def _generate_via_vertex_optimizer(
@@ -272,19 +286,19 @@ async def _generate_via_vertex_optimizer(
     )
 
   # Generate ground truth via teacher agent
-  print("  Generating synthetic ground truth via teacher agent...")
+  logger.info("Generating synthetic ground truth via teacher agent...")
   gt_results = await _generate_ground_truth(config, failed)
-  print(f"  Generated {len(gt_results)} ground truth answers.")
+  logger.info("Generated %d ground truth answers.", len(gt_results))
 
-  # Save ground truth to reports/ for inspection
-  gt_dir = os.path.join(
+  # Save ground truth for inspection
+  gt_dir = _state.get("output_dir") or os.path.join(
       os.path.dirname(config.eval_cases_path), "..", "reports"
   )
   os.makedirs(gt_dir, exist_ok=True)
   gt_path = os.path.join(gt_dir, "ground_truth_latest.json")
   with open(gt_path, "w") as f:
     json.dump(gt_results, f, indent=2)
-  print(f"  Ground truth saved to {gt_path}")
+  logger.info("Ground truth saved to %s", gt_path)
   print("")
   print("  Agent (bad) vs Teacher (ground truth) comparison:")
   print("  " + "─" * 68)
@@ -334,11 +348,11 @@ async def _generate_via_vertex_optimizer(
   )
   prompt_with_tools = current_prompt + tool_use_directive
 
-  print(
-      f"  Calling Vertex AI Prompt Optimizer with {len(gt_results)} "
-      "ground truth examples..."
+  logger.info(
+      "Calling Vertex AI Prompt Optimizer with %d ground truth examples...",
+      len(gt_results),
   )
-  print("  (The optimizer is a server-side job — typically 2-4 minutes.)")
+  logger.info("(The optimizer is a server-side job — typically 2-4 minutes.)")
 
   from google.genai.types import HttpOptions
   from google.genai.types import HttpRetryOptions
@@ -364,7 +378,7 @@ async def _generate_via_vertex_optimizer(
     while True:
       await asyncio.sleep(15)
       elapsed += 15
-      print(f"  ... still optimizing ({elapsed}s elapsed)", flush=True)
+      logger.info("... still optimizing (%ds elapsed)", elapsed)
 
   progress_task = asyncio.create_task(_progress_indicator())
   try:
@@ -381,7 +395,7 @@ async def _generate_via_vertex_optimizer(
   finally:
     progress_task.cancel()
 
-  print("  Optimizer returned a candidate prompt.")
+  logger.info("Optimizer returned a candidate prompt.")
 
   parsed = result.parsed_response
   if (
@@ -460,9 +474,9 @@ async def test_candidate(candidate_prompt: str) -> str:
       cases_count = len(json.load(_f).get("eval_cases", []))
   except Exception:
     pass
-  print(
-      f"\n  Testing candidate prompt against {cases_count} golden eval "
-      "cases (regression gate)..."
+  logger.info(
+      "Testing candidate prompt against %d golden eval cases (regression gate)...",
+      cases_count,
   )
 
   eval_runner = EvalRunner(
@@ -575,14 +589,27 @@ def _classify_question(question: str, tools: list) -> tuple[str, str]:
   return "unknown", "unknown"
 
 
-def extract_failed_cases(report: dict, tools: list | None = None) -> list[dict]:
+def extract_failed_cases(
+    report: dict,
+    tools: list | None = None,
+    max_failure_extract: int | str | None = None,
+) -> list[dict]:
   """Extract failed sessions as new golden eval cases.
 
   Classifies each question against available tools to infer
   category and expected_tool. Questions that don't match any
   tool topic are still extracted with category="unknown".
+
+  Args:
+      report: Quality report dict with sessions.
+      tools: Agent tool functions for classification.
+      max_failure_extract: Controls how many failures to extract.
+          None or "all" extracts everything (default).
+          "auto" uses two-tier selection: one per category
+          first, then fills proportionally up to 2x categories.
+          An integer sets a hard cap with category-aware selection.
   """
-  new_cases = []
+  all_cases = []
   for session in report.get("sessions", []):
     cat = (
         session.get("metrics", {})
@@ -601,7 +628,7 @@ def extract_failed_cases(report: dict, tools: list | None = None) -> list[dict]:
     case_id = re.sub(r"[^a-z0-9]+", "_", question.lower().strip())[:40]
     case_id = f"extracted_{case_id.strip('_')}"
 
-    new_cases.append(
+    all_cases.append(
         {
             "id": case_id,
             "question": question,
@@ -610,7 +637,54 @@ def extract_failed_cases(report: dict, tools: list | None = None) -> list[dict]:
             "notes": f"Extracted from failed synthetic traffic ({cat})",
         }
     )
-  return new_cases
+
+  if not all_cases:
+    return all_cases
+
+  # Apply extraction limit
+  if max_failure_extract is None or max_failure_extract == "all":
+    return all_cases
+
+  # Two-tier category-aware selection
+  if max_failure_extract == "auto":
+    categories = {c["category"] for c in all_cases}
+    budget = 2 * len(categories)
+  else:
+    budget = int(max_failure_extract)
+
+  if len(all_cases) <= budget:
+    return all_cases
+
+  # Tier 1: one case per category (breadth)
+  by_category: dict[str, list[dict]] = {}
+  for case in all_cases:
+    by_category.setdefault(case["category"], []).append(case)
+
+  selected = []
+  for cat_cases in by_category.values():
+    selected.append(cat_cases[0])
+
+  if len(selected) >= budget:
+    return selected[:budget]
+
+  # Tier 2: fill remaining slots proportionally from heaviest categories
+  remaining_budget = budget - len(selected)
+  selected_ids = {c["id"] for c in selected}
+
+  # Sort categories by failure count (descending) for proportional fill
+  sorted_cats = sorted(
+      by_category.keys(), key=lambda k: len(by_category[k]), reverse=True
+  )
+
+  # Round-robin across categories, heaviest first
+  tier2_pool = []
+  for cat in sorted_cats:
+    for case in by_category[cat]:
+      if case["id"] not in selected_ids:
+        tier2_pool.append(case)
+
+  selected.extend(tier2_pool[:remaining_budget])
+  return selected
 
 
 def add_eval_cases(eval_cases_path: str, new_cases: list[dict]) -> int:
@@ -752,7 +826,7 @@ def create_improver_agent(
   return LoopAgent(
       name="prompt_improver",
       sub_agents=[inner_agent],
-      max_iterations=config.max_attempts,
+      max_iterations=config.optimizer_max_iterations,
   )
 
 
@@ -766,6 +840,7 @@ async def run_improvement(
     report: dict | None = None,
     report_path: str | None = None,
     from_eval_results: bool = False,
+    output_dir: str | None = None,
 ) -> dict:
   """Run the improvement cycle.
 
@@ -777,6 +852,8 @@ async def run_improvement(
           if ``from_eval_results`` is True).
       from_eval_results: If True, treat ``report_path`` as golden eval
           results and build a synthetic quality report.
+      output_dir: Directory for ground_truth_latest.json. Defaults to
+          ``<demo>/reports/``.
 
   Returns:
       Dict with ``old_version``, ``new_version``, ``golden_cases``,
@@ -819,7 +896,7 @@ async def run_improvement(
   print("")
 
   if report["summary"].get("total_sessions", 0) == 0:
-    print("  ERROR: Report has 0 sessions. Cannot improve.")
+    logger.error("Report has 0 sessions. Cannot improve.")
     return {
         "old_version": old_version,
         "new_version": old_version,
@@ -827,8 +904,13 @@ async def run_improvement(
         "improvement_result": "no_data",
     }
 
-  if report["summary"]["meaningful_rate"] >= 95:
-    print("  Quality is already high (>=95%). No improvement needed.")
+  threshold_pct = config.quality_threshold * 100
+  if report["summary"]["meaningful_rate"] >= threshold_pct:
+    logger.info(
+        "Quality %.0f%% meets threshold (%.0f%%). No improvement needed.",
+        report["summary"]["meaningful_rate"],
+        threshold_pct,
+    )
     return {
         "old_version": old_version,
         "new_version": old_version,
@@ -837,21 +919,39 @@ async def run_improvement(
     }
 
   # Extract failed cases into golden set FIRST
-  failed_cases = extract_failed_cases(report, tools=config.agent_tools)
+  failed_cases = extract_failed_cases(
+      report,
+      tools=config.agent_tools,
+      max_failure_extract=config.max_failure_extract,
+  )
   if failed_cases:
     added = add_eval_cases(config.eval_cases_path, failed_cases)
     with open(config.eval_cases_path) as f:
       golden_count = len(json.load(f).get("eval_cases", []))
-    print(
-        f"  Extracted {len(failed_cases)} failed cases, added"
-        f" {added} new to golden set ({golden_count} total)."
+    logger.info(
+        "Extracted %d failed cases, added %d new to golden set (%d total).",
+        len(failed_cases),
+        added,
+        golden_count,
     )
   else:
-    print("  No failed cases to extract.")
+    logger.info("No failed cases to extract.")
+
+  # Narrow the report to only the extracted cases so the optimizer
+  # generates ground truth for the same subset used in the golden
+  # eval set, not for every failure in the report.
+  if failed_cases:
+    extracted_questions = {c["question"] for c in failed_cases}
+    report["sessions"] = [
+        s
+        for s in report["sessions"]
+        if s.get("question", "") in extracted_questions
+    ]
 
   # Set shared state for tool functions
   _state["config"] = config
   _state["report"] = report
+  _state["output_dir"] = output_dir
 
   # Run the LoopAgent
   improver = create_improver_agent(config)
@@ -890,10 +990,10 @@ async def run_improvement(
     golden_count = len(json.load(f).get("eval_cases", []))
 
   if new_version > old_version:
-    print(f"\n  v{old_version} -> v{new_version} complete.")
+    logger.info("v%d -> v%d complete.", old_version, new_version)
   else:
-    print(
-        "\n  WARNING: No improvement was written. All candidates"
+    logger.warning(
+        "No improvement was written. All candidates"
         " may have failed regression tests."
     )
 

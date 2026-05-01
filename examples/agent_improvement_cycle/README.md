@@ -136,12 +136,34 @@ before/after comparison to verify the improved prompt didn't regress
 on cost or performance. No extra agent runs — just math on the session
 data already in BigQuery.
 
-Run multiple cycles with `--cycles N`. By default, the cycle stops
-early once all synthetic traffic scores 100% meaningful. Use
-`--no-auto` to force all N cycles to run regardless.
+By default, the script runs a **single cycle** and stops. This is the
+safe default -- each cycle makes dozens of Gemini API calls, and
+running multiple cycles unintentionally can lead to unexpected costs.
 
-The hero moment: quality typically climbs from ~40% to ~100% in a single cycle
-(results vary due to non-deterministic LLM output).
+To run multiple improvement cycles, use `--auto --cycles N`. The
+`--auto` flag enables auto-cycling, which runs up to N cycles and
+stops early once quality meets the `quality_threshold` setting in
+`config.json` (default: `0.95`, i.e. 95% meaningful).
+
+**Why 95% and not 100%?** LLM output is non-deterministic. At N=100
+traffic, a single stochastic misfire causes a 1% drop. Setting the
+threshold to 100% leads to cycles that fight random variance rather
+than fix systematic gaps. The 95% default means: stop when real
+failures are gone, don't chase noise. If the improvement step finds
+quality already at or above the threshold, it skips the optimizer
+entirely and the cycle moves on. If no new prompt version is produced,
+the measurement step (Step 5) is also skipped -- there is nothing to
+compare.
+
+The hero moment: quality typically climbs from ~60% to ~100% in a single cycle
+(results vary due to non-deterministic LLM output). With the default
+N=10 traffic, the improvement step typically succeeds on the first
+optimizer attempt. At higher traffic volumes (`--traffic-count 100`),
+the system discovers more failures but `max_failure_extract: "auto"`
+applies category-aware selection to extract a representative subset
+(~12 cases from ~42 failures in a typical run), keeping the regression
+gate strict but manageable. Use `--auto --cycles 3` for higher-N runs
+to give the optimizer multiple cycles to converge if needed.
 
 ### Why This Matters
 
@@ -208,7 +230,7 @@ All agent-specific settings live in a single declarative config file:
   "eval_cases_path": "eval/eval_cases.json",
   "traffic_generator": "eval/generate_traffic.py",
   "model_id": "gemini-2.5-flash",
-  "max_attempts": 3,
+  "optimizer_max_iterations": 3,
   "prompt_storage": "vertex",
   "vertex_prompt_id": "1234567890",
   "use_vertex_optimizer": true,
@@ -268,6 +290,17 @@ When the cycle identifies failed sessions, it uses the
    `target_response` mode.
 4. **Validate**: Test the optimized prompt against the full golden
    eval set before accepting it.
+
+The optimizer also receives the agent's **tool signatures**, auto-extracted
+from the Python functions by `tool_introspection.py` using `inspect` --
+function name, parameter types, and full docstrings. These are appended
+to the prompt as plain text so the optimizer knows what tools exist and
+what arguments they accept. This is how the V2 prompt ends up with
+explicit topic-to-tool mappings: the optimizer saw the tool's signature,
+saw the teacher successfully calling it with specific arguments, and
+generated routing instructions accordingly. If the optimizer's output
+strips the tool references (which it tends to do), they are
+re-appended automatically.
 
 This replaces raw "ask Gemini to rewrite the prompt" with a
 structured optimization pipeline backed by real failure data.
@@ -332,10 +365,10 @@ Failed sessions from quality report
   toward tool-grounded answers
 ```
 
-The teacher's answers are saved to `reports/ground_truth_latest.json`
-for inspection. Each entry contains the original question, the bad
-response from the target agent, and the teacher's ground truth
-answer.
+The teacher's answers are saved to
+`reports/run_YYYYMMDD_HHMMSS/ground_truth_latest.json` for inspection.
+Each entry contains the original question, the bad response from the
+target agent, and the teacher's ground truth answer.
 
 #### Why not just use the teacher prompt directly?
 
@@ -437,12 +470,43 @@ BigQuery from Steps 2 and 5; no additional agent runs are needed. See
 - **Golden eval gate**: Candidate prompts must pass ALL golden cases.
   Rejected if any fail, retried up to 3 times.
 - **Eval case extraction**: Failed synthetic cases are added to the
-  golden set before improvement, raising the bar each cycle.
+  golden set before improvement, raising the bar each cycle. The
+  `max_failure_extract` config controls how many cases are extracted (see
+  [Scaling extraction](#scaling-extraction) below).
 - **Question deduplication**: Extracted cases are deduplicated by both
   ID and question text.
 - **Length check**: Prompts shorter than 50 characters are rejected.
 - **Retry with backoff**: Quality report step retries for BigQuery
   write propagation delays.
+
+### Scaling extraction
+
+At the default traffic volume (N=10), the system typically discovers
+3-5 failures, all of which are extracted into the golden eval set.
+The regression gate (3 original + 3-5 extracted = ~8 cases) is
+manageable for the optimizer to satisfy in one pass.
+
+At higher volumes (`--traffic-count 100`), the system discovers
+30-43 failures. Extracting all of them creates a regression gate of
+40+ cases, which is often too strict for the optimizer to satisfy
+in a single attempt. Many of these failures are redundant — 15
+might be "benefits" questions that all fail the same way.
+
+The `max_failure_extract` config field controls this:
+
+| Value | Behavior |
+|-------|----------|
+| `null` (default) | Extract **all** failures — every unhelpful or partial session becomes a golden eval case. This is the right choice for the small-N demo (N=10) where there are only 3-5 failures. At higher traffic volumes it can overwhelm the optimizer (see below). |
+| `"auto"` | Two-tier category-aware selection. Tier 1: one failure per category (breadth). Tier 2: fill proportionally from heaviest categories. Budget = 2 × number of failing categories. For 6 categories, that's ~12 cases. |
+| Integer (e.g. `10`) | Hard cap with category-aware selection. Same two-tier logic. |
+
+Example config for high-traffic runs:
+
+```json
+{
+  "max_failure_extract": "auto"
+}
+```
 
 ## Quick Start
 
@@ -487,35 +551,95 @@ git tracking.
 ### 3. Run the demo
 
 ```bash
-# Single improvement cycle
+# Single improvement cycle (default — safe for experimentation)
 ./run_cycle.sh
 
-# Up to 3 cycles, stops early when 100% meaningful (default behavior)
-./run_cycle.sh --cycles 3
+# Auto-cycle: run up to 3 cycles, stop early when quality meets threshold (95%)
+./run_cycle.sh --auto --cycles 3
 
-# Force all 3 cycles even if 100% is reached early
-./run_cycle.sh --cycles 3 --no-auto
+# Exactly 3 cycles (no early stopping)
+./run_cycle.sh --cycles 3
 
 # Eval only (no improvement step)
 ./run_cycle.sh --eval-only
 
 # Customize traffic volume
-./run_cycle.sh --cycles 3 --traffic-count 20
+./run_cycle.sh --auto --cycles 3 --traffic-count 20
+
+# Scaled run (N=100)
+./run_cycle.sh --auto --cycles 5 --traffic-count 100
 
 # Use a different agent's config
 ./run_cycle.sh --agent-config /path/to/other/config.json
 ```
 
-### 4. Inspect results
+The scaled run combines all the flags:
 
-After a run, check the `reports/` directory:
+| Flag | What it does |
+|------|--------------|
+| `--auto` | Stop early when quality meets `quality_threshold` (default 95%) |
+| `--cycles 5` | Run up to 5 improvement cycles |
+| `--traffic-count 100` | Generate 100 synthetic questions per cycle (default: 10) |
+
+All output is automatically logged to `reports/run_YYYYMMDD_HHMMSS/run.log`
+(ANSI colour codes stripped for readability). Each run gets its own
+timestamped subdirectory under `reports/`, so previous runs are preserved.
+
+> **Cost note:** Each cycle makes ~50-80 Gemini API calls (more with
+> higher `--traffic-count`). Running `./run_cycle.sh` with no flags is
+> always safe (1 cycle). Use `--auto --cycles N` only when you
+> intentionally want multiple iterations.
+
+#### Standalone quality report
+
+The `quality_report.sh` wrapper can be run independently. Use
+`--env` to point at the right `.env` file (otherwise it loads the
+repo root `.env` which may target a different dataset):
 
 ```bash
-# Quality report JSON (consumed by the improver)
-cat reports/quality_report_cycle_1.json | python3 -m json.tool | head -20
+# From anywhere — explicit .env
+../../scripts/quality_report.sh \
+  --env .env \
+  --app-name company_info_agent \
+  --time-period all --limit 100
+```
 
-# Synthetic traffic that was generated
-cat reports/synthetic_traffic_cycle_1.json | python3 -m json.tool | head -20
+The `--env` flag is also available on `quality_report.py` directly.
+
+### 4. Inspect results
+
+Each run creates a timestamped subdirectory under `reports/`:
+
+```
+reports/
+  run_20260430_174920/          # one directory per run
+    run.log                     # full console output (ANSI stripped)
+    synthetic_traffic_cycle_1.json      # generated questions (Step 1)
+    latest_eval_results.json            # session IDs + responses (Step 2)
+    expected_session_ids_cycle_1.json   # copy of eval results for BQ lookup
+    quality_report_cycle_1.json         # LLM judge scores (Step 3)
+    operational_metrics_cycle_1_baseline.json  # latency/tokens/turns (Step 3)
+    ground_truth_latest.json            # teacher agent answers (Step 4)
+    synthetic_traffic_cycle_1_fresh.json       # fresh questions (Step 5)
+    expected_session_ids_cycle_1_fresh.json    # fresh session IDs (Step 5)
+    quality_report_cycle_1_after.json          # post-improvement scores (Step 5)
+    operational_metrics_cycle_1.json           # before/after comparison (Step 5)
+  run_20260430_183045/          # next run — previous runs are preserved
+    ...
+```
+
+Previous runs are never deleted. `reset.sh` only resets the prompt
+and golden eval set, not the reports directory.
+
+```bash
+# Browse runs
+ls reports/
+
+# Quality report JSON (consumed by the improver)
+cat reports/run_*/quality_report_cycle_1.json | python3 -m json.tool | head -20
+
+# Full console log
+less reports/run_20260430_174920/run.log
 
 # See new eval cases extracted from failures
 cat eval/eval_cases.json
@@ -523,14 +647,17 @@ cat eval/eval_cases.json
 
 ### Reset to V1
 
-To start over, reset everything to the initial state (fresh V1
-prompt in Vertex AI, 3 golden eval cases, no reports):
+To start over, reset the prompt and golden eval set to their initial
+state. Previous run reports are preserved.
 
 ```bash
 ./reset.sh
 ```
 
-This deletes the old Vertex AI prompt and creates a fresh one at V1.
+This restores the V1 prompt in Vertex AI, resets `eval_cases.json` to
+the original 3 golden cases, and removes generated synthetic traffic
+files. The `reports/` directory (with timestamped run subdirectories)
+is not deleted.
 
 ## Using with Other Agents
 
@@ -556,13 +683,14 @@ agent:
 | `eval_cases_path` | required | Path to golden eval set JSON |
 | `traffic_generator` | required | Path to traffic generation script |
 | `model_id` | `gemini-2.5-flash` | Gemini model for agent and judge |
-| `max_attempts` | `3` | Max prompt improvement attempts per cycle |
+| `optimizer_max_iterations` | `3` | Max Vertex AI Prompt Optimizer iterations per improvement step |
 | `prompt_storage` | `python_file` | `vertex` or `python_file` |
 | `vertex_prompt_id` | `""` | Vertex AI prompt ID (auto-filled by setup) |
 | `vertex_project` | from `gcloud` | GCP project for Vertex AI (defaults to env) |
 | `vertex_location` | `us-central1` | Vertex AI region |
 | `use_vertex_optimizer` | `false` | Use Vertex AI Prompt Optimizer |
 | `teacher_model_id` | `null` | Model for teacher agent (null = same as `model_id`) |
+| `max_failure_extract` | `null` | Max failed cases to extract per cycle. `null` = extract **all** failures (best for the small-N demo where N<=20). `"auto"` = two-tier category-aware selection (~2x categories). Integer = hard cap with category-aware selection. See [Scaling extraction](#scaling-extraction). |
 
 ### Environment variables (.env)
 
@@ -586,7 +714,7 @@ Gemini calls; a 3-cycle run uses ~200-300.
 **Golden eval set growth:** The golden eval set grows each cycle as
 failed synthetic cases are extracted into it. Each improvement attempt
 validates the candidate prompt against the full golden set (N agent
-calls + N judge calls per attempt, up to `max_attempts` retries).
+calls + N judge calls per attempt, up to `optimizer_max_iterations` retries).
 After several cycles, the golden set can reach 20+ cases, increasing
 both cost and runtime of the validation step. For long-running
 deployments, consider periodically pruning redundant golden cases.

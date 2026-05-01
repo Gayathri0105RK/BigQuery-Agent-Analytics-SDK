@@ -27,13 +27,36 @@ import logging
 import warnings
 
 warnings.filterwarnings("ignore")
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="authlib")
-logging.getLogger("google.genai").setLevel(logging.ERROR)
+
+# authlib forces simplefilter("always") at import time; neutralise early.
+try:
+  import authlib.deprecate
+
+  warnings.filterwarnings(
+      "ignore", category=authlib.deprecate.AuthlibDeprecationWarning
+  )
+except ImportError:
+  pass
+
+# Suppress noisy SDK loggers before any google imports.
+for _name in (
+    "google.genai",
+    "google_genai",
+    "google.auth",
+    "google_auth",
+    "google.adk",
+    "google_adk",
+    "httpx",
+    "httpcore",
+):
+  logging.getLogger(_name).setLevel(logging.ERROR)
 
 import asyncio
 import json
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 from google.adk.runners import InMemoryRunner
 from google.genai.types import Content
@@ -101,7 +124,7 @@ async def run_all_cases(
   eval_path = eval_cases_path or cfg["eval_cases_path"]
 
   cases = load_eval_cases(eval_path)
-  print(f"\nRunning {len(cases)} cases...\n")
+  logger.info("Running %d cases...", len(cases))
 
   runner = InMemoryRunner(
       agent=mod.root_agent,
@@ -109,43 +132,47 @@ async def run_all_cases(
       plugins=[mod.bq_logging_plugin],
   )
 
+  # Limit concurrent LLM calls to avoid 429 rate-limit errors and timeouts.
+  semaphore = asyncio.Semaphore(5)
+
   async def _run_one(i: int, case: dict) -> dict:
-    try:
-      result = await asyncio.wait_for(
-          run_single_case(runner, case), timeout=120
-      )
-      resp_text = result["response"].replace("\n", " ").strip()
-      print(f"  [{i}/{len(cases)}] {case['id']}: {case['question']}")
-      print(f"           -> {resp_text}")
-      return result
-    except asyncio.TimeoutError:
-      print(f"  [{i}/{len(cases)}] {case['id']}: {case['question']}")
-      print(f"           -> TIMEOUT (120s)")
-      return {
-          "case_id": case["id"],
-          "question": case["question"],
-          "category": case.get("category", ""),
-          "response": "ERROR: Timeout after 120s",
-          "session_id": "",
-      }
-    except Exception as e:
-      print(f"  [{i}/{len(cases)}] {case['id']}: {case['question']}")
-      print(f"           -> ERROR: {e}")
-      return {
-          "case_id": case["id"],
-          "question": case["question"],
-          "category": case.get("category", ""),
-          "response": f"ERROR: {e}",
-          "session_id": "",
-      }
+    async with semaphore:
+      try:
+        result = await asyncio.wait_for(
+            run_single_case(runner, case), timeout=200
+        )
+        resp_text = result["response"].replace("\n", " ").strip()
+        print(f"  [{i}/{len(cases)}] {case['id']}: {case['question']}")
+        print(f"           -> {resp_text}")
+        return result
+      except asyncio.TimeoutError:
+        print(f"  [{i}/{len(cases)}] {case['id']}: {case['question']}")
+        print(f"           -> TIMEOUT (200s)")
+        return {
+            "case_id": case["id"],
+            "question": case["question"],
+            "category": case.get("category", ""),
+            "response": "ERROR: Timeout after 200s",
+            "session_id": "",
+        }
+      except Exception as e:
+        print(f"  [{i}/{len(cases)}] {case['id']}: {case['question']}")
+        print(f"           -> ERROR: {e}")
+        return {
+            "case_id": case["id"],
+            "question": case["question"],
+            "category": case.get("category", ""),
+            "response": f"ERROR: {e}",
+            "session_id": "",
+        }
 
   results = await asyncio.gather(
       *[_run_one(i, case) for i, case in enumerate(cases, 1)]
   )
   results = list(results)
 
-  print(f"\nCompleted {len(results)}/{len(cases)} cases.")
-  print("Sessions logged to BigQuery via telemetry plugin.")
+  logger.info("Completed %d/%d cases.", len(results), len(cases))
+  print("  Sessions logged to BigQuery via telemetry plugin.")
   return results
 
 
@@ -168,7 +195,7 @@ async def run_golden_eval(
 
   cases = eval_runner.load_eval_cases(eval_path)
   _, version = config.prompt_adapter.read_prompt()
-  print(f"\n  Evaluating {len(cases)} cases with prompt V{version}")
+  logger.info("Evaluating %d cases with prompt V%s", len(cases), version)
   print("  (LLM judge, no BigQuery logging)\n")
 
   prompt, _ = config.prompt_adapter.read_prompt()
@@ -177,7 +204,7 @@ async def run_golden_eval(
   )
 
   rate = round(100 * passed / total) if total else 0
-  print(f"\n  Result: {passed}/{total} passed ({rate}%)")
+  logger.info("Result: %d/%d passed (%d%%)", passed, total, rate)
   if all_passed:
     print("  All cases pass.")
   else:
@@ -215,6 +242,15 @@ def main() -> None:
           " provided, uses the demo's company_info_agent config."
       ),
   )
+  parser.add_argument(
+      "--output-dir",
+      type=str,
+      default=None,
+      help=(
+          "Directory to write latest_eval_results.json into."
+          " Defaults to <demo>/reports/."
+      ),
+  )
   args = parser.parse_args()
 
   if args.golden:
@@ -231,11 +267,12 @@ def main() -> None:
     )
 
   # Write results to a file for reference
-  results_path = os.path.join(_DEMO_DIR, "reports", "latest_eval_results.json")
+  output_dir = args.output_dir or os.path.join(_DEMO_DIR, "reports")
+  results_path = os.path.join(output_dir, "latest_eval_results.json")
   os.makedirs(os.path.dirname(results_path), exist_ok=True)
   with open(results_path, "w") as f:
     json.dump(results, f, indent=2)
-  print(f"Results saved to {results_path}")
+  logger.info("Results saved to %s", results_path)
 
   if failed:
     sys.exit(1)
