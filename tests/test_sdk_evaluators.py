@@ -664,6 +664,60 @@ class TestContextCacheHitRatePrebuilt:
     assert detail["observed"] == 1.0
     assert detail["cache_state"] == "no_llm_input"
 
+  def test_cached_tokens_clamps_above_input_tokens(self):
+    evaluator = CodeEvaluator.context_cache_hit_rate(min_hit_rate=0.5)
+    score = evaluator.evaluate_session(
+        {
+            "session_id": "s1",
+            "input_tokens": 1000,
+            "cached_tokens": 1200,
+            "cache_telemetry_events": 1,
+        }
+    )
+    assert score.scores["context_cache_hit_rate"] == 1.0
+    assert score.passed is True
+    detail = score.details["metric_context_cache_hit_rate"]
+    assert detail["observed"] == 1.0
+    assert detail["cache_state"] == "warm"
+
+  def test_non_numeric_cached_tokens_fall_back_to_zero(self):
+    evaluator = CodeEvaluator.context_cache_hit_rate(min_hit_rate=0.5)
+    score = evaluator.evaluate_session(
+        {
+            "session_id": "s1",
+            "input_tokens": 1000,
+            "cached_tokens": {"bad": "shape"},
+            "cache_telemetry_events": 1,
+        }
+    )
+    assert score.scores["context_cache_hit_rate"] == 0.0
+    assert score.passed is False
+    detail = score.details["metric_context_cache_hit_rate"]
+    assert detail["observed"] == 0.0
+    assert detail["cache_state"] == "cold_start"
+
+  def test_legacy_cached_tokens_without_telemetry_count_is_observed(self):
+    evaluator = CodeEvaluator.context_cache_hit_rate(min_hit_rate=0.5)
+    score = evaluator.evaluate_session(
+        {
+            "session_id": "s1",
+            "input_tokens": 1000,
+            "cached_tokens": 600,
+        }
+    )
+    assert score.scores["context_cache_hit_rate"] == pytest.approx(0.6)
+    assert score.passed is True
+    detail = score.details["metric_context_cache_hit_rate"]
+    assert detail["observed"] == pytest.approx(0.6)
+    assert detail["cache_telemetry_events"] == 0
+
+  def test_invalid_cache_state_thresholds_raise(self):
+    with pytest.raises(ValueError, match="cold_start_rate"):
+      CodeEvaluator.context_cache_hit_rate(
+          cold_start_rate=0.9,
+          warm_rate=0.1,
+      )
+
 
 class TestCostPerSessionPrebuilt:
   """Tests for CodeEvaluator.cost_per_session() preset."""

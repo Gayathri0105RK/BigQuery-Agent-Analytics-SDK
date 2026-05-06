@@ -281,6 +281,9 @@ class CodeEvaluator:
         try:
           observed_value = metric.observed_fn(session_summary)
         except Exception:  # pylint: disable=broad-except
+          logger.debug(
+              "Metric %s observed_fn failed", metric.name, exc_info=True
+          )
           observed_value = None
       elif metric.observed_key is not None:
         observed_value = session_summary.get(metric.observed_key)
@@ -295,7 +298,7 @@ class CodeEvaluator:
         try:
           metric_details.update(metric.detail_fn(session_summary))
         except Exception:  # pylint: disable=broad-except
-          logger.debug("Metric %s detail_fn failed", metric.name)
+          logger.debug("Metric %s detail_fn failed", metric.name, exc_info=True)
       details[f"metric_{metric.name}"] = metric_details
 
     return SessionScore(
@@ -544,6 +547,11 @@ class CodeEvaluator:
     Returns:
         CodeEvaluator configured for context cache efficiency.
     """
+    if not 0.0 <= cold_start_rate < warm_rate <= 1.0:
+      raise ValueError(
+          "cold_start_rate and warm_rate must satisfy "
+          "0 <= cold_start_rate < warm_rate <= 1"
+      )
 
     def _number(value: Any, default: float = 0.0) -> float:
       if value is None:

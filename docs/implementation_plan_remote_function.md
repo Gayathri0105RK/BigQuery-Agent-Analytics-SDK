@@ -213,6 +213,7 @@ bq-agent-sdk evaluate [OPTIONS]
   --last TEXT           1h|24h|7d|30d
   --limit INT           [default: 100]
   --exit-code           Return 1 on evaluation failure
+  --fail-on-missing-cache-telemetry
 ```
 
 Dispatch logic:
@@ -388,7 +389,10 @@ def _dispatch(client, operation, params):
 def _build_evaluator(params):
     """Build CodeEvaluator from params dict."""
     metric = params.get("metric", "latency")
-    threshold = params.get("threshold", 5000)
+    threshold = params.get("threshold")
+    fail_on_missing_telemetry = params.get(
+        "fail_on_missing_telemetry", False
+    )
     factories = {
         "latency": lambda t: CodeEvaluator.latency(threshold_ms=t),
         "error_rate": lambda t: CodeEvaluator.error_rate(max_error_rate=t),
@@ -402,10 +406,25 @@ def _build_evaluator(params):
         "ttft": lambda t: CodeEvaluator.ttft(threshold_ms=t),
         "cost": lambda t: CodeEvaluator.cost_per_session(max_cost_usd=t),
     }
-    factory = factories.get(metric)
-    if not factory:
+    factories_default = {
+        "latency": CodeEvaluator.latency,
+        "error_rate": CodeEvaluator.error_rate,
+        "turn_count": CodeEvaluator.turn_count,
+        "token_efficiency": CodeEvaluator.token_efficiency,
+        "context_cache_hit_rate": CodeEvaluator.context_cache_hit_rate,
+        "ttft": CodeEvaluator.ttft,
+        "cost": CodeEvaluator.cost_per_session,
+    }
+    if metric not in factories:
         raise ValueError(f"Unknown metric: {metric}")
-    return factory(threshold)
+    if metric == "context_cache_hit_rate":
+        kwargs = {"fail_on_missing_telemetry": fail_on_missing_telemetry}
+        if threshold is not None:
+            kwargs["min_hit_rate"] = threshold
+        return CodeEvaluator.context_cache_hit_rate(**kwargs)
+    if threshold is not None:
+        return factories[metric](threshold)
+    return factories_default[metric]()
 
 
 def _build_judge(params):

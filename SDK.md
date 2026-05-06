@@ -149,7 +149,18 @@ Gemini `usage_metadata.cached_content_token_count`. Older plugin data
 may not contain that field. When cache telemetry is absent, the
 evaluator reports `cache_state="no_cache_telemetry"` and passes by
 default instead of treating the session as a 0% cache hit. Set
-`fail_on_missing_telemetry=True` to make missing cache telemetry fail.
+`fail_on_missing_telemetry=True` to make missing cache telemetry fail;
+CLI users can pass `--fail-on-missing-cache-telemetry`, and remote
+function callers can set `fail_on_missing_telemetry=true`.
+
+Unlike the binary gate-style prebuilts, this metric stores an average
+metric score in `aggregate_scores["context_cache_hit_rate"]`: the raw
+cache hit rate for telemetry-bearing sessions, and `1.0` for sessions
+that pass as unknown because telemetry is missing. Use strict
+missing-telemetry mode when dashboards should not treat cache-blind
+sessions as successful cache reuse. In mixed pipelines where only some
+LLM events report cache telemetry, the session-level rate is diluted by
+cache-blind input tokens.
 
 The metric identifies sessions with low context-cache efficiency. It
 does not identify the exact prompt segment or template change that
@@ -1774,6 +1785,10 @@ bq-agent-sdk evaluate --project-id=P --dataset-id=D \
 Available evaluators: `latency`, `error_rate`, `turn_count`,
 `token_efficiency`, `context_cache_hit_rate`, `ttft`, `cost`,
 `llm-judge`.
+
+For `context_cache_hit_rate`, add
+`--fail-on-missing-cache-telemetry` to fail sessions that have input
+tokens but no cache telemetry.
 
 LLM judge criteria: `correctness`, `hallucination`, `sentiment`.
 
