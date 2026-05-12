@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Revalidation harness for compiled structured extractors**
+  in
+  `bigquery_agent_analytics.extractor_compilation.revalidation`
+  and
+  [`docs/extractor_compilation_revalidation.md`](docs/extractor_compilation_revalidation.md).
+  Issue [#75](https://github.com/GoogleCloudPlatform/BigQuery-Agent-Analytics-SDK/issues/75)
+  PR C2.d — turns the compiled path from "works in tests" into
+  "keeps proving itself after rollout." Public surface:
+  ``revalidate_compiled_extractors(events,
+  compiled_extractors, reference_extractors, resolved_graph,
+  ...)`` drives ``run_with_fallback`` (with a no-op fallback)
+  over a batch of events AND calls the reference extractor
+  directly, aggregating the per-event outcomes into a
+  ``RevalidationReport`` with **two orthogonal dimensions**:
+  (1) runtime decision — per-event-type ``EventTypeCounts``
+  plus totals for ``compiled_unchanged`` /
+  ``compiled_filtered`` / ``fallback_for_event``, with
+  ``compiled_path_faults`` split out so bundle bugs (the
+  wrapper's ``compiled_exception`` audit field covers
+  exceptions, wrong return type, and malformed result
+  internals) are distinguishable from ontology drift; (2)
+  agreement against reference — ``parity_matches`` /
+  ``parity_divergences`` / ``parity_not_checked`` using a
+  three-comparator parity check: ``_compare_nodes`` and
+  ``_compare_span_handling`` from ``measurement.py`` plus
+  ``_compare_edges`` in ``revalidation.py`` (same edge_id
+  set with matching relationship_name / endpoints / property-
+  set per shared edge; duplicate edge_ids on either side
+  reported as a divergence rather than silently collapsed by
+  dict keying, since #76 doesn't enforce edge-id
+  uniqueness). The parity dimension catches **schema-valid
+  but semantically wrong** outputs the validator would
+  silently accept. **Every failure mode on the reference
+  side becomes a parity divergence, never a batch abort**:
+  exceptions, non-``StructuredExtractionResult`` returns
+  (including ``None``), and comparator crashes all funnel
+  into the divergence channel with a descriptive string. Headline KPIs:
+  ``compiled_unchanged_rate`` (schema safety) and
+  ``parity_match_rate`` (semantic agreement; denominator
+  excludes ``parity_not_checked`` so wrapper-filtered events
+  don't conflate with wrong-output events). Sample
+  divergences are capped (per-dimension, independently) at 10
+  by default. Skipped events (event_types without a compiled
+  or reference extractor, malformed events) are counted
+  separately from the rate denominators.
+  ``check_thresholds(report, RevalidationThresholds(...))``
+  evaluates the same report against policy gates;
+  ``RevalidationThresholds`` validates rates are in
+  ``[0, 1]`` (and rejects NaN / bool) at construction so a
+  typo like ``max_fallback_for_event_rate=5`` fails loud
+  instead of silently disabling the gate. Multiple
+  thresholds all evaluated (no short-circuit), violations as
+  human-readable strings naming the failed rate and bound.
+  ``RevalidationReport.to_json()`` is deterministic for
+  persistence + cross-run diffing. Out of scope (deferred):
+  scheduled / cron orchestration, BigQuery / disk
+  persistence, CLI binary, sampling strategy, auto-fix
+  workflows.
 - **Orchestrator call-site swap for compiled structured
   extractors** in
   `bigquery_agent_analytics.ontology_graph.OntologyGraphManager`
