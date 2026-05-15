@@ -1735,9 +1735,209 @@ def views_create(
     raise typer.Exit(code=2)
 
 
+# ------------------------------------------------------------------ #
+# materialize-window (cron-friendly graph refresh)                     #
+# ------------------------------------------------------------------ #
+
+
+@app.command("materialize-window")
+def materialize_window(
+    project_id: str = typer.Option(
+        ..., envvar="BQ_AGENT_PROJECT", help=_PROJECT_HELP
+    ),
+    dataset_id: str = typer.Option(
+        ..., envvar="BQ_AGENT_DATASET", help="BigQuery dataset."
+    ),
+    ontology_path: str = typer.Option(
+        ..., "--ontology", help="Path to ontology YAML file."
+    ),
+    binding_path: str = typer.Option(
+        ..., "--binding", help="Path to binding YAML file."
+    ),
+    events_table: str = typer.Option(
+        "agent_events",
+        "--events-table",
+        help="Source telemetry table name (in --dataset-id).",
+    ),
+    lookback_hours: float = typer.Option(
+        ...,
+        "--lookback-hours",
+        help=(
+            "Hard upper bound on how far back to discover sessions. "
+            "Combined with the state-table checkpoint and --overlap-"
+            "minutes to compute the actual scan window."
+        ),
+    ),
+    overlap_minutes: float = typer.Option(
+        15.0,
+        "--overlap-minutes",
+        help=(
+            "Re-process events newer than (last_checkpoint - "
+            "overlap_minutes). Catches late-arriving rows. Session-"
+            "level idempotency keeps re-runs safe."
+        ),
+    ),
+    completion_event_type: str = typer.Option(
+        "AGENT_COMPLETED",
+        "--completion-event-type",
+        help=(
+            "Treat sessions as done when this event_type appears in "
+            "--events-table. Parameterized so non-BQ-AA-plugin "
+            "emitters aren't locked out."
+        ),
+    ),
+    include_active_sessions: bool = typer.Option(
+        False,
+        "--include-active-sessions",
+        help=(
+            "Drop the completion-event filter and materialize every "
+            "session seen in the window. Partial coverage; useful "
+            "for debugging, not production."
+        ),
+    ),
+    state_table: Optional[str] = typer.Option(
+        None,
+        "--state-table",
+        help=(
+            "Checkpoint table reference. Default: "
+            "{project}.{dataset}._bqaa_materialization_state. Accepts "
+            "table / dataset.table / project.dataset.table."
+        ),
+    ),
+    graph_name: Optional[str] = typer.Option(
+        None,
+        "--graph-name",
+        help="Property-graph name. Default: binding's ontology field.",
+    ),
+    bundles_root: Optional[str] = typer.Option(
+        None,
+        "--bundles-root",
+        envvar="BQAA_BUNDLES_ROOT",
+        help=(
+            "Compiled-bundle directory. When set, the runtime "
+            "registry routes events through compiled bundles with "
+            "validator-gated fallback to --reference-extractors-"
+            "module."
+        ),
+    ),
+    reference_extractors_module: Optional[str] = typer.Option(
+        None,
+        "--reference-extractors-module",
+        help=(
+            "Dotted module path exposing EXTRACTORS dict. Required "
+            "when --bundles-root is set."
+        ),
+    ),
+    max_sessions: Optional[int] = typer.Option(
+        None,
+        "--max-sessions",
+        help="Hard cap on sessions per run (cost guardrail).",
+    ),
+    location: Optional[str] = typer.Option(
+        None, "--location", help="BigQuery location (e.g. 'US', 'EU')."
+    ),
+    validate_binding: bool = typer.Option(
+        True,
+        "--validate-binding/--no-validate-binding",
+        help=(
+            "Pre-flight binding-validate against live BQ tables "
+            "before extraction. The 'fail before AI.GENERATE "
+            "spend' contract from #161. Default on. Skipped on "
+            "--dry-run regardless."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "Discover sessions but don't extract, validate, or "
+            "materialize. Writes no state-table row."
+        ),
+    ),
+    fmt: str = typer.Option(
+        "json",
+        "--format",
+        help="Output format: json|text|table.",
+    ),
+) -> None:
+  """Time-window-driven graph refresh.
+
+  Discover sessions whose terminal event landed in
+  ``[scan_start, scan_end)``, extract each session's full history,
+  and materialize. Append-only state table tracks the high-water
+  mark so subsequent runs pick up where the last left off.
+
+  Exit codes:
+      0 — every discovered session materialized cleanly.
+      1 — expected failure. Either at least one session failed
+          (partial result; checkpoint advanced only to the last
+          successful session) OR --validate-binding detected
+          schema drift against live BigQuery before extraction
+          (no sessions materialized; drift recorded in the state
+          table audit trail).
+      2 — unexpected internal error (load failure, missing flag,
+          programming bug).
+  """
+  try:
+    from .materialize_window import run_materialize_window
+
+    result = run_materialize_window(
+        project_id=project_id,
+        dataset_id=dataset_id,
+        ontology_path=ontology_path,
+        binding_path=binding_path,
+        events_table=events_table,
+        lookback_hours=lookback_hours,
+        overlap_minutes=overlap_minutes,
+        completion_event_type=completion_event_type,
+        include_active_sessions=include_active_sessions,
+        state_table=state_table,
+        graph_name=graph_name,
+        bundles_root=bundles_root,
+        reference_extractors_module=reference_extractors_module,
+        max_sessions=max_sessions,
+        location=location,
+        validate_binding=validate_binding,
+        dry_run=dry_run,
+    )
+    typer.echo(format_output(result.to_json(), fmt))
+    if not result.ok:
+      raise typer.Exit(code=1)
+  except typer.Exit:
+    raise
+  except Exception as exc:  # noqa: BLE001
+    typer.echo(f"Error: {exc}", err=True)
+    raise typer.Exit(code=2)
+
+
 def main() -> None:
   """Entry point for ``bq-agent-sdk``."""
   app()
+
+
+def _materialize_window_entry() -> None:
+  """Entry point for the standalone ``bqaa-materialize-window``
+  console script.
+
+  Builds a Click command directly from the ``materialize_window``
+  callback so ``--help`` renders as
+  ``Usage: bqaa-materialize-window [OPTIONS]`` — collapsed, no
+  nested subcommand. ``typer.run`` would re-register the function
+  as a subcommand named ``materialize-window``, producing the
+  confusing
+  ``Usage: bqaa-materialize-window materialize-window [OPTIONS]``.
+  The function body is the same one registered on the main ``app``
+  as the ``materialize-window`` subcommand; both call paths share
+  the implementation.
+  """
+  from typer.main import get_command_from_info
+  from typer.models import CommandInfo
+
+  info = CommandInfo(name=None, callback=materialize_window)
+  click_cmd = get_command_from_info(
+      info, pretty_exceptions_short=True, rich_markup_mode=None
+  )
+  click_cmd()
 
 
 if __name__ == "__main__":
