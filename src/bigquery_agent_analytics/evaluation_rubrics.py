@@ -32,7 +32,7 @@ def response_usefulness_metric() -> CategoricalMetricDefinition:
         name="unhelpful",
         definition=(
           "The response fails to resolve the objective, including clarifying"
-          " that 'I don't have that information'."
+          " that I do not have that information."
         ),
       ),
     ],
@@ -51,7 +51,10 @@ def task_grounding_metric() -> CategoricalMetricDefinition:
       ),
       CategoricalMetricCategory(
         name="hallucinated",
-        definition="The response references external unverified training knowledge.",
+        definition=(
+          "The response references external unverified training knowledge"
+          " outside agent response, agent tools, and LLM general knowledge."
+        ),
       ),
     ],
   )
